@@ -17,6 +17,8 @@
   let showFolderView = false;
   let draggedMaterial = null;
   let dropTarget = null;
+  let showEditModal = false;
+  let editingMaterial = null;
 
   // 사용자가 변경되거나 타입이 변경될 때 데이터 재조회
   $: if ($user?.id && type) {
@@ -107,8 +109,70 @@
   }
 
   function handleEdit(material) {
-    // TODO: 자료 편집 페이지로 이동
-    console.log('자료 편집:', material);
+    editingMaterial = { ...material }; // 복사본 생성
+    showEditModal = true;
+  }
+
+  function closeEditModal() {
+    showEditModal = false;
+    editingMaterial = null;
+  }
+
+  async function saveEditedMaterial() {
+    if (!editingMaterial) return;
+    
+    // 유효성 검사
+    if (!editingMaterial.title.trim()) {
+      alert('자료 이름을 입력해주세요.');
+      return;
+    }
+    
+    if (!editingMaterial.subject) {
+      alert('과목을 선택해주세요.');
+      return;
+    }
+    
+    // 폴더 경로 정규화
+    if (editingMaterial.folder_path) {
+      editingMaterial.folder_path = editingMaterial.folder_path.trim();
+      if (!editingMaterial.folder_path.startsWith('/')) {
+        editingMaterial.folder_path = '/' + editingMaterial.folder_path;
+      }
+      // 중복 슬래시 제거
+      editingMaterial.folder_path = editingMaterial.folder_path.replace(/\/+/g, '/');
+      // 마지막 슬래시 제거 (루트 제외)
+      if (editingMaterial.folder_path.length > 1 && editingMaterial.folder_path.endsWith('/')) {
+        editingMaterial.folder_path = editingMaterial.folder_path.slice(0, -1);
+      }
+    }
+    
+    try {
+      // 실제 구현에서는 API 호출
+      console.log('Saving material:', editingMaterial);
+      
+      // 더미 데이터 업데이트 시뮬레이션
+      materials.update(items => 
+        items.map(item => 
+          item.id === editingMaterial.id ? { ...editingMaterial, updated_at: new Date().toISOString() } : item
+        )
+      );
+      
+      alert('자료가 성공적으로 수정되었습니다.');
+      closeEditModal();
+    } catch (error) {
+      console.error('Error saving material:', error);
+      alert('저장 중 오류가 발생했습니다.');
+    }
+  }
+
+  function resetExtractionStatus() {
+    if (!editingMaterial) return;
+    
+    if (confirm('추출 상태를 초기화하시겠습니까? 추출된 문항 정보가 삭제됩니다.')) {
+      editingMaterial.is_extracted = false;
+      editingMaterial.extracted_count = 0;
+      editingMaterial.extraction_date = null;
+    }
   }
 
   async function handleDelete(material) {
@@ -566,3 +630,199 @@
     {/if}
   {/if}
 </div>
+
+<!-- 편집 모달 -->
+{#if showEditModal && editingMaterial}
+  <div class="modal modal-open">
+    <div class="modal-box w-11/12 max-w-2xl">
+      <h3 class="font-bold text-lg mb-4">자료 편집</h3>
+      
+      <div class="space-y-4">
+        <!-- 기본 정보 -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="form-control">
+            <label class="label">
+              <span class="label-text">자료 이름</span>
+            </label>
+            <input 
+              type="text" 
+              class="input input-bordered" 
+              bind:value={editingMaterial.title}
+              placeholder="자료 이름을 입력하세요"
+            />
+          </div>
+          
+          <div class="form-control">
+            <label class="label">
+              <span class="label-text">과목</span>
+            </label>
+            <select class="select select-bordered" bind:value={editingMaterial.subject}>
+              <option value="">과목 선택</option>
+              <option value="수학">수학</option>
+              <option value="영어">영어</option>
+              <option value="과학">과학</option>
+              <option value="국어">국어</option>
+              <option value="사회">사회</option>
+              <option value="기타">기타</option>
+            </select>
+          </div>
+        </div>
+        
+        <!-- 폴더 경로 -->
+        <div class="form-control">
+          <label class="label">
+            <span class="label-text">폴더 경로</span>
+          </label>
+          <div class="input-group">
+            <span class="bg-base-200 px-3 py-2 border border-r-0 rounded-l-lg">📁</span>
+            <input 
+              type="text" 
+              class="input input-bordered flex-1" 
+              bind:value={editingMaterial.folder_path}
+              placeholder="/폴더명 또는 /상위폴더/하위폴더"
+            />
+          </div>
+          <label class="label">
+            <span class="label-text-alt">예: /수학, /과학/화학, /시험지</span>
+          </label>
+        </div>
+        
+        <!-- 파일 정보 (읽기 전용) -->
+        <div class="bg-base-200 rounded-lg p-4">
+          <h4 class="font-medium mb-2">파일 정보</h4>
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+            <div>
+              <span class="text-base-content/70">파일 타입:</span>
+              <div class="flex items-center gap-1">
+                <span class="text-lg {getFileTypeColor(editingMaterial.file_type)}">{getFileTypeIcon(editingMaterial.file_type)}</span>
+                <span>{editingMaterial.file_type ? editingMaterial.file_type.split('/')[1].toUpperCase() : '-'}</span>
+              </div>
+            </div>
+            <div>
+              <span class="text-base-content/70">파일 크기:</span>
+              <div>{editingMaterial.file_size ? formatFileSize(editingMaterial.file_size) : '-'}</div>
+            </div>
+            <div>
+              <span class="text-base-content/70">페이지 수:</span>
+              <div>{editingMaterial.pages ? `${editingMaterial.pages}페이지` : '-'}</div>
+            </div>
+            <div>
+              <span class="text-base-content/70">생성일:</span>
+              <div>{formatDate(editingMaterial.created_at)}</div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- 추출 상태 -->
+        {#if editingMaterial.is_extracted}
+          <div class="bg-success/10 border border-success/20 rounded-lg p-4">
+            <div class="flex items-center justify-between mb-2">
+              <h4 class="font-medium text-success flex items-center gap-2">
+                <span>✅</span>
+                문항 추출 완료
+              </h4>
+              <button 
+                class="btn btn-outline btn-warning btn-xs"
+                on:click={resetExtractionStatus}
+              >
+                상태 초기화
+              </button>
+            </div>
+            <div class="grid grid-cols-2 gap-2 text-sm">
+              <div>
+                <span class="text-base-content/70">추출된 문항:</span>
+                <div class="font-medium">{editingMaterial.extracted_count}개</div>
+              </div>
+              <div>
+                <span class="text-base-content/70">추출일:</span>
+                <div class="font-medium">{formatDate(editingMaterial.extraction_date)}</div>
+              </div>
+            </div>
+          </div>
+        {:else}
+          <div class="bg-warning/10 border border-warning/20 rounded-lg p-4">
+            <div class="flex items-center justify-between mb-2">
+              <h4 class="font-medium text-warning flex items-center gap-2">
+                <span>⏳</span>
+                문항 추출 대기 중
+              </h4>
+              <button 
+                class="btn btn-outline btn-primary btn-xs"
+                on:click={() => handleExtract(editingMaterial)}
+              >
+                지금 추출하기
+              </button>
+            </div>
+            <p class="text-sm text-base-content/70">
+              이 자료에서 아직 문항을 추출하지 않았습니다.
+            </p>
+          </div>
+        {/if}
+        
+        <!-- 빠른 액션 -->
+        <div class="bg-base-200 rounded-lg p-4">
+          <h4 class="font-medium mb-3">빠른 액션</h4>
+          <div class="flex flex-wrap gap-2">
+            <button 
+              class="btn btn-outline btn-sm"
+              on:click={() => navigator.clipboard.writeText(editingMaterial.title)}
+            >
+              📋 이름 복사
+            </button>
+            <button 
+              class="btn btn-outline btn-sm"
+              on:click={() => navigator.clipboard.writeText(editingMaterial.folder_path || '/')}
+            >
+              📁 경로 복사
+            </button>
+            {#if editingMaterial.is_extracted}
+              <button 
+                class="btn btn-outline btn-sm"
+                on:click={() => goto('/my-materials?tab=question-bank&material=' + editingMaterial.id)}
+              >
+                📝 추출된 문항 보기
+              </button>
+            {/if}
+            <button 
+              class="btn btn-outline btn-sm"
+              on:click={() => {
+                closeEditModal();
+                handleExtract(editingMaterial);
+              }}
+            >
+              🔍 문항 추출하기
+            </button>
+          </div>
+        </div>
+      </div>
+      
+      <div class="modal-action">
+        <button class="btn btn-ghost" on:click={closeEditModal}>
+          취소 <span class="text-xs opacity-70">(Esc)</span>
+        </button>
+        <button 
+          class="btn btn-primary" 
+          on:click={saveEditedMaterial}
+          disabled={!editingMaterial?.title?.trim() || !editingMaterial?.subject}
+        >
+          저장 <span class="text-xs opacity-70">(Ctrl+S)</span>
+        </button>
+      </div>
+    </div>
+    <div class="modal-backdrop" on:click={closeEditModal}></div>
+  </div>
+{/if}
+
+<!-- 키보드 단축키 처리 -->
+{#if showEditModal}
+  <svelte:window 
+    on:keydown={(e) => {
+      if (e.key === 'Escape') {
+        closeEditModal();
+      } else if (e.ctrlKey && e.key === 's') {
+        e.preventDefault();
+        saveEditedMaterial();
+      }
+    }}
+  />
+{/if}
