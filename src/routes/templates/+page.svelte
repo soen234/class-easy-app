@@ -145,7 +145,7 @@
 </svelte:head>
 
 <div class="space-y-6">
-  <div class="flex items-center justify-between">
+  <div class="flex flex-col gap-2">
     <h1 class="text-3xl font-bold">템플릿</h1>
     <div class="breadcrumbs text-sm">
       <ul>

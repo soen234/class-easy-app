@@ -10,6 +10,7 @@
   let searchTerm = '';
   let sortBy = 'created_at';
   let sortOrder = 'desc';
+  let viewType = 'grid'; // 'grid' or 'list'
 
   // 사용자가 변경되거나 타입이 변경될 때 데이터 재조회
   $: if ($user?.id && type) {
@@ -103,8 +104,30 @@
       />
     </div>
     
-    <!-- 정렬 및 액션 버튼 -->
+    <!-- 정렬, 뷰 타입 및 액션 버튼 -->
     <div class="flex gap-3 items-center">
+      <!-- 뷰 타입 토글 -->
+      <div class="join">
+        <button 
+          class="btn btn-sm join-item {viewType === 'grid' ? 'btn-active' : ''}"
+          on:click={() => viewType = 'grid'}
+          title="카드 보기"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path>
+          </svg>
+        </button>
+        <button 
+          class="btn btn-sm join-item {viewType === 'list' ? 'btn-active' : ''}"
+          on:click={() => viewType = 'list'}
+          title="리스트 보기"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"></path>
+          </svg>
+        </button>
+      </div>
+      
       <!-- 정렬 옵션 -->
       <div class="flex items-center gap-2">
         <select class="select select-bordered select-sm" bind:value={sortBy}>
@@ -152,72 +175,149 @@
     </div>
   {:else}
     <!-- 자료 목록 -->
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-      {#each filteredMaterials as material}
-        <div class="card bg-base-100 shadow-xl hover:shadow-2xl transition-shadow">
-          <div class="card-body">
-            <div class="flex items-start justify-between mb-2">
-              <div class="text-2xl">{getFileTypeIcon(material.file_type)}</div>
-              <div class="dropdown dropdown-end">
-                <div tabindex="0" role="button" class="btn btn-ghost btn-sm">
-                  <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                    <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"></path>
-                  </svg>
+    {#if viewType === 'grid'}
+      <!-- 카드 뷰 -->
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+        {#each filteredMaterials as material}
+          <div class="card bg-base-100 shadow-xl hover:shadow-2xl transition-shadow">
+            <div class="card-body">
+              <div class="flex items-start justify-between mb-2">
+                <div class="text-2xl">{getFileTypeIcon(material.file_type)}</div>
+                <div class="dropdown dropdown-end">
+                  <div tabindex="0" role="button" class="btn btn-ghost btn-sm">
+                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                      <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"></path>
+                    </svg>
+                  </div>
+                  <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-[1] w-52 p-2 shadow">
+                    <li><button on:click={() => handleEdit(material)}>편집</button></li>
+                    <li><button on:click={() => handleDelete(material)} class="text-error">삭제</button></li>
+                  </ul>
                 </div>
-                <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-[1] w-52 p-2 shadow">
-                  <li><button on:click={() => handleEdit(material)}>편집</button></li>
-                  <li><button on:click={() => handleDelete(material)} class="text-error">삭제</button></li>
-                </ul>
+              </div>
+              
+              <h2 class="card-title text-sm mb-2">{material.title}</h2>
+              
+              <div class="text-xs text-base-content/70 space-y-1">
+                {#if material.file_type}
+                  <p>{material.file_type.split('/')[1].toUpperCase()}</p>
+                {/if}
+                {#if material.file_size}
+                  <p>{formatFileSize(material.file_size)}</p>
+                {/if}
+                {#if material.pages}
+                  <p>{material.pages}페이지</p>
+                {/if}
+                <p>{formatDate(material.created_at)}</p>
+              </div>
+              
+              <div class="card-actions justify-end mt-4">
+                <button 
+                  class="btn btn-primary btn-sm" 
+                  on:click={() => handleExtract(material)}
+                >
+                  문항 추출
+                </button>
+                <button 
+                  class="btn btn-ghost btn-sm"
+                  on:click={() => handleEdit(material)}
+                >
+                  편집
+                </button>
               </div>
             </div>
-            
-            <h2 class="card-title text-sm mb-2">{material.title}</h2>
-            
-            <div class="text-xs text-base-content/70 space-y-1">
-              {#if material.file_type}
-                <p>{material.file_type.split('/')[1].toUpperCase()}</p>
-              {/if}
-              {#if material.file_size}
-                <p>{formatFileSize(material.file_size)}</p>
-              {/if}
-              {#if material.pages}
-                <p>{material.pages}페이지</p>
-              {/if}
-              <p>{formatDate(material.created_at)}</p>
-            </div>
-            
-            <div class="card-actions justify-end mt-4">
-              <button 
-                class="btn btn-primary btn-sm" 
-                on:click={() => handleExtract(material)}
-              >
-                문항 추출
-              </button>
-              <button 
-                class="btn btn-ghost btn-sm"
-                on:click={() => handleEdit(material)}
-              >
-                편집
-              </button>
-            </div>
           </div>
+        {/each}
+      </div>
+    {:else}
+      <!-- 리스트 뷰 -->
+      <div class="bg-base-100 rounded-lg shadow">
+        <div class="overflow-x-auto">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>파일</th>
+                <th>이름</th>
+                <th>유형</th>
+                <th>크기</th>
+                <th>페이지</th>
+                <th>생성일</th>
+                <th class="text-right">액션</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each filteredMaterials as material}
+                <tr class="hover:bg-base-200">
+                  <td>
+                    <div class="text-2xl">{getFileTypeIcon(material.file_type)}</div>
+                  </td>
+                  <td>
+                    <div class="font-medium">{material.title}</div>
+                  </td>
+                  <td>
+                    <div class="badge badge-ghost">
+                      {material.file_type ? material.file_type.split('/')[1].toUpperCase() : '-'}
+                    </div>
+                  </td>
+                  <td>
+                    <span class="text-sm">
+                      {material.file_size ? formatFileSize(material.file_size) : '-'}
+                    </span>
+                  </td>
+                  <td>
+                    <span class="text-sm">
+                      {material.pages ? `${material.pages}페이지` : '-'}
+                    </span>
+                  </td>
+                  <td>
+                    <span class="text-sm text-base-content/70">
+                      {formatDate(material.created_at)}
+                    </span>
+                  </td>
+                  <td class="text-right">
+                    <div class="flex gap-2 justify-end">
+                      <button 
+                        class="btn btn-primary btn-xs" 
+                        on:click={() => handleExtract(material)}
+                      >
+                        문항 추출
+                      </button>
+                      <div class="dropdown dropdown-end">
+                        <div tabindex="0" role="button" class="btn btn-ghost btn-xs">
+                          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"></path>
+                          </svg>
+                        </div>
+                        <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-[1] w-40 p-2 shadow">
+                          <li><button on:click={() => handleEdit(material)}>편집</button></li>
+                          <li><button on:click={() => handleDelete(material)} class="text-error">삭제</button></li>
+                        </ul>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
         </div>
-      {:else}
-        <!-- 빈 상태 -->
-        <div class="col-span-full text-center py-12">
-          <div class="text-4xl mb-4">📁</div>
-          <h3 class="text-lg font-medium mb-2">
-            {type === 'original' ? '원본 자료가' : '수업 자료가'} 없습니다
-          </h3>
-          <p class="text-base-content/70 mb-4">
-            새 자료를 업로드하거나 만들어보세요
-          </p>
-          <div class="flex gap-2 justify-center">
-            <button class="btn btn-primary" on:click={handleUpload}>자료 올리기</button>
-            <button class="btn btn-outline" on:click={handleCreate}>자료 만들기</button>
-          </div>
+      </div>
+    {/if}
+    
+    <!-- 빈 상태 -->
+    {#if filteredMaterials.length === 0}
+      <div class="text-center py-12">
+        <div class="text-4xl mb-4">📁</div>
+        <h3 class="text-lg font-medium mb-2">
+          {type === 'original' ? '원본 자료가' : '제작한 자료가'} 없습니다
+        </h3>
+        <p class="text-base-content/70 mb-4">
+          새 자료를 업로드하거나 만들어보세요
+        </p>
+        <div class="flex gap-2 justify-center">
+          <button class="btn btn-primary" on:click={handleUpload}>자료 올리기</button>
+          <button class="btn btn-outline" on:click={handleCreate}>자료 만들기</button>
         </div>
-      {/each}
-    </div>
+      </div>
+    {/if}
   {/if}
 </div>

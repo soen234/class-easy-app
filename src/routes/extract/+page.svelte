@@ -150,8 +150,8 @@
   <!-- 상단 헤더 -->
   <div class="bg-base-100 shadow-sm">
     <div class="container mx-auto px-4 py-4">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-4">
+      <div class="flex flex-col gap-2">
+        <div class="flex items-center justify-between">
           <h1 class="text-2xl font-bold">문항 추출</h1>
           {#if selectedMaterial}
             <div class="flex items-center gap-2 text-sm text-base-content/70">

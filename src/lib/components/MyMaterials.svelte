@@ -14,7 +14,7 @@
 </script>
 
 <div class="space-y-6">
-  <div class="flex items-center justify-between">
+  <div class="flex flex-col gap-2">
     <h1 class="text-3xl font-bold">내 자료</h1>
     <div class="breadcrumbs text-sm">
       <ul>
