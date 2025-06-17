@@ -15,7 +15,12 @@ const dummyMaterials = [
     file_size: 1024000,
     pages: 120,
     created_at: '2024-01-15T09:00:00Z',
-    user_id: 'demo-user'
+    user_id: 'demo-user',
+    folder_path: '/수학',
+    subject: '수학',
+    extracted_count: 15,
+    is_extracted: true,
+    extraction_date: '2024-01-16T10:30:00Z'
   },
   {
     id: '2',
@@ -25,7 +30,12 @@ const dummyMaterials = [
     file_size: 800000,
     pages: 80,
     created_at: '2024-01-10T09:00:00Z',
-    user_id: 'demo-user'
+    user_id: 'demo-user',
+    folder_path: '/수학/연습문제',
+    subject: '수학',
+    extracted_count: 0,
+    is_extracted: false,
+    extraction_date: null
   },
   {
     id: '3',
@@ -35,7 +45,57 @@ const dummyMaterials = [
     file_size: 200000,
     pages: 4,
     created_at: '2024-01-20T09:00:00Z',
-    user_id: 'demo-user'
+    user_id: 'demo-user',
+    folder_path: '/시험지',
+    subject: '수학',
+    extracted_count: 8,
+    is_extracted: true,
+    extraction_date: '2024-01-20T14:15:00Z'
+  },
+  {
+    id: '4',
+    title: '영어 단어장',
+    type: 'original',
+    file_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    file_size: 512000,
+    pages: 25,
+    created_at: '2024-01-12T09:00:00Z',
+    user_id: 'demo-user',
+    folder_path: '/영어',
+    subject: '영어',
+    extracted_count: 0,
+    is_extracted: false,
+    extraction_date: null
+  },
+  {
+    id: '5',
+    title: '과학 실험 보고서',
+    type: 'original',
+    file_type: 'application/haansofthwp',
+    file_size: 300000,
+    pages: 12,
+    created_at: '2024-01-08T09:00:00Z',
+    user_id: 'demo-user',
+    folder_path: '/과학',
+    subject: '과학',
+    extracted_count: 5,
+    is_extracted: true,
+    extraction_date: '2024-01-09T11:20:00Z'
+  },
+  {
+    id: '6',
+    title: '화학 발표자료',
+    type: 'lesson',
+    file_type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    file_size: 1500000,
+    pages: 35,
+    created_at: '2024-01-18T09:00:00Z',
+    user_id: 'demo-user',
+    folder_path: '/과학/화학',
+    subject: '과학',
+    extracted_count: 12,
+    is_extracted: true,
+    extraction_date: '2024-01-18T16:45:00Z'
   }
 ];
 
@@ -180,9 +240,48 @@ export function formatFileSize(bytes) {
 
 // 파일 타입 아이콘
 export function getFileTypeIcon(type) {
-  if (type?.includes('pdf')) return '📄';
-  if (type?.includes('word')) return '📝';
-  if (type?.includes('powerpoint') || type?.includes('presentation')) return '📊';
-  if (type?.includes('image')) return '🖼️';
+  if (!type) return '📎';
+  
+  const lowerType = type.toLowerCase();
+  
+  // PDF 파일
+  if (lowerType.includes('pdf')) return '📕';
+  
+  // Word 문서
+  if (lowerType.includes('word') || lowerType.includes('document')) return '📘';
+  
+  // PowerPoint 프레젠테이션
+  if (lowerType.includes('powerpoint') || lowerType.includes('presentation')) return '📗';
+  
+  // Excel 스프레드시트
+  if (lowerType.includes('excel') || lowerType.includes('sheet')) return '📊';
+  
+  // HWP 문서
+  if (lowerType.includes('hwp')) return '📄';
+  
+  // 이미지 파일
+  if (lowerType.includes('image') || lowerType.includes('jpeg') || lowerType.includes('jpg') || lowerType.includes('png') || lowerType.includes('gif')) return '🖼️';
+  
+  // 텍스트 파일
+  if (lowerType.includes('text') || lowerType.includes('txt')) return '📃';
+  
+  // 기본 파일
   return '📎';
+}
+
+// 파일 타입 색상
+export function getFileTypeColor(type) {
+  if (!type) return 'text-base-content';
+  
+  const lowerType = type.toLowerCase();
+  
+  if (lowerType.includes('pdf')) return 'text-red-500';
+  if (lowerType.includes('word') || lowerType.includes('document')) return 'text-blue-500';
+  if (lowerType.includes('powerpoint') || lowerType.includes('presentation')) return 'text-orange-500';
+  if (lowerType.includes('excel') || lowerType.includes('sheet')) return 'text-green-500';
+  if (lowerType.includes('hwp')) return 'text-purple-500';
+  if (lowerType.includes('image')) return 'text-pink-500';
+  if (lowerType.includes('text') || lowerType.includes('txt')) return 'text-gray-500';
+  
+  return 'text-base-content';
 }

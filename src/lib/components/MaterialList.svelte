@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { user } from '$lib/stores/auth.js';
-  import { materials, loading, fetchMaterials, deleteMaterial, formatFileSize, getFileTypeIcon } from '$lib/stores/materials.js';
+  import { materials, loading, fetchMaterials, deleteMaterial, formatFileSize, getFileTypeIcon, getFileTypeColor } from '$lib/stores/materials.js';
   
   export let type = 'original';
   
@@ -11,6 +11,12 @@
   let sortBy = 'created_at';
   let sortOrder = 'desc';
   let viewType = 'grid'; // 'grid' or 'list'
+  let selectedSubject = 'all';
+  let selectedExtractionStatus = 'all';
+  let currentFolder = '/';
+  let showFolderView = false;
+  let draggedMaterial = null;
+  let dropTarget = null;
 
   // 사용자가 변경되거나 타입이 변경될 때 데이터 재조회
   $: if ($user?.id && type) {
@@ -23,7 +29,14 @@
       const matchesType = material.type === type;
       const matchesSearch = !searchTerm || 
         material.title.toLowerCase().includes(searchTerm.toLowerCase());
-      return matchesType && matchesSearch;
+      const matchesSubject = selectedSubject === 'all' || material.subject === selectedSubject;
+      const matchesExtractionStatus = selectedExtractionStatus === 'all' || 
+        (selectedExtractionStatus === 'extracted' && material.is_extracted) ||
+        (selectedExtractionStatus === 'not_extracted' && !material.is_extracted);
+      const matchesFolder = !showFolderView || 
+        (material.folder_path && material.folder_path.startsWith(currentFolder));
+      
+      return matchesType && matchesSearch && matchesSubject && matchesExtractionStatus && matchesFolder;
     });
 
     // 정렬 적용
@@ -44,6 +57,33 @@
     });
 
     filteredMaterials = filtered;
+  }
+
+  // 폴더 구조 가져오기
+  $: folders = getFoldersFromMaterials($materials, type);
+  $: subjects = getUniqueSubjects($materials, type);
+
+  function getFoldersFromMaterials(materials, type) {
+    const folderSet = new Set();
+    materials
+      .filter(m => m.type === type && m.folder_path)
+      .forEach(m => {
+        const parts = m.folder_path.split('/').filter(Boolean);
+        let currentPath = '';
+        parts.forEach(part => {
+          currentPath += '/' + part;
+          folderSet.add(currentPath);
+        });
+      });
+    return Array.from(folderSet).sort();
+  }
+
+  function getUniqueSubjects(materials, type) {
+    const subjectSet = new Set();
+    materials
+      .filter(m => m.type === type && m.subject)
+      .forEach(m => subjectSet.add(m.subject));
+    return Array.from(subjectSet).sort();
   }
 
   async function loadMaterials() {
@@ -84,6 +124,70 @@
     return new Date(dateString).toLocaleDateString('ko-KR');
   }
 
+  // 드래그앤드롭 함수들
+  function handleDragStart(e, material) {
+    draggedMaterial = material;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/html', e.target.outerHTML);
+    e.currentTarget.style.opacity = '0.5';
+  }
+
+  function handleDragEnd(e) {
+    e.currentTarget.style.opacity = '1';
+    draggedMaterial = null;
+    dropTarget = null;
+  }
+
+  function handleDragOver(e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    return false;
+  }
+
+  function handleDragEnter(e, material) {
+    if (draggedMaterial && draggedMaterial.id !== material.id) {
+      dropTarget = material;
+      e.currentTarget.style.backgroundColor = 'rgba(59, 130, 246, 0.1)';
+    }
+  }
+
+  function handleDragLeave(e) {
+    e.currentTarget.style.backgroundColor = '';
+  }
+
+  function handleDrop(e, targetMaterial) {
+    e.preventDefault();
+    e.currentTarget.style.backgroundColor = '';
+    
+    if (draggedMaterial && targetMaterial && draggedMaterial.id !== targetMaterial.id) {
+      // 같은 폴더로 이동 시뮬레이션
+      if (targetMaterial.folder_path && draggedMaterial.folder_path !== targetMaterial.folder_path) {
+        console.log(`Moving ${draggedMaterial.title} to ${targetMaterial.folder_path}`);
+        // 실제 구현에서는 API 호출로 폴더 이동
+        alert(`"${draggedMaterial.title}"을(를) "${targetMaterial.folder_path}" 폴더로 이동했습니다.`);
+      }
+    }
+    
+    draggedMaterial = null;
+    dropTarget = null;
+    return false;
+  }
+
+  function handleFolderDrop(e, folderPath) {
+    e.preventDefault();
+    e.currentTarget.style.backgroundColor = '';
+    
+    if (draggedMaterial && draggedMaterial.folder_path !== folderPath) {
+      console.log(`Moving ${draggedMaterial.title} to ${folderPath}`);
+      // 실제 구현에서는 API 호출로 폴더 이동
+      alert(`"${draggedMaterial.title}"을(를) "${folderPath}" 폴더로 이동했습니다.`);
+    }
+    
+    draggedMaterial = null;
+    dropTarget = null;
+    return false;
+  }
+
   onMount(() => {
     if ($user?.id) {
       loadMaterials();
@@ -92,17 +196,81 @@
 </script>
 
 <div class="space-y-4">
-  <!-- 상단 검색 및 액션 -->
-  <div class="flex flex-col lg:flex-row gap-4 justify-between">
-    <!-- 검색 -->
-    <div class="flex-1 max-w-md">
-      <input
-        type="text"
-        placeholder="자료 검색..."
-        class="input input-bordered w-full"
-        bind:value={searchTerm}
-      />
+  <!-- 필터 및 검색 -->
+  <div class="bg-base-100 rounded-lg shadow p-4 space-y-4">
+    <!-- 상단: 검색 및 폴더 토글 -->
+    <div class="flex flex-col lg:flex-row gap-4 justify-between">
+      <!-- 검색 -->
+      <div class="flex-1 max-w-md">
+        <input
+          type="text"
+          placeholder="자료 검색..."
+          class="input input-bordered w-full"
+          bind:value={searchTerm}
+        />
+      </div>
+      
+      <!-- 폴더 보기 토글 -->
+      <div class="flex items-center gap-3">
+        <label class="label cursor-pointer">
+          <span class="label-text mr-2">폴더 보기</span>
+          <input type="checkbox" class="toggle toggle-primary" bind:checked={showFolderView} />
+        </label>
+      </div>
     </div>
+    
+    <!-- 하단: 필터들 -->
+    <div class="flex flex-wrap gap-3 items-center">
+      <!-- 과목 필터 -->
+      <select class="select select-bordered select-sm" bind:value={selectedSubject}>
+        <option value="all">모든 과목</option>
+        {#each subjects as subject}
+          <option value={subject}>{subject}</option>
+        {/each}
+      </select>
+      
+      <!-- 추출 상태 필터 -->
+      <select class="select select-bordered select-sm" bind:value={selectedExtractionStatus}>
+        <option value="all">추출 상태</option>
+        <option value="extracted">추출 완료</option>
+        <option value="not_extracted">추출 전</option>
+      </select>
+      
+      <!-- 폴더 선택 (폴더 보기 모드일 때만) -->
+      {#if showFolderView}
+        <select class="select select-bordered select-sm" bind:value={currentFolder}>
+          <option value="/">전체 폴더</option>
+          {#each folders as folder}
+            <option value={folder}>{folder}</option>
+          {/each}
+        </select>
+      {/if}
+    </div>
+    
+    <!-- 폴더 드롭 존 (폴더 보기 모드일 때만) -->
+    {#if showFolderView && folders.length > 0}
+      <div class="border-t pt-3">
+        <p class="text-sm font-medium mb-2">폴더로 드래그하여 이동:</p>
+        <div class="flex flex-wrap gap-2">
+          {#each folders as folder}
+            <div 
+              class="badge badge-outline badge-lg cursor-pointer hover:badge-primary transition-colors p-3"
+              on:dragover={handleDragOver}
+              on:dragenter={(e) => e.currentTarget.style.backgroundColor = 'rgba(59, 130, 246, 0.1)'}
+              on:dragleave={(e) => e.currentTarget.style.backgroundColor = ''}
+              on:drop={(e) => handleFolderDrop(e, folder)}
+            >
+              📁 {folder}
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
+    </div>
+  </div>
+  
+  <!-- 뷰 컨트롤 -->
+  <div class="flex justify-between items-center">
     
     <!-- 정렬, 뷰 타입 및 액션 버튼 -->
     <div class="flex gap-3 items-center">
@@ -179,13 +347,40 @@
       <!-- 카드 뷰 -->
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
         {#each filteredMaterials as material}
-          <div class="card bg-base-100 shadow-xl hover:shadow-2xl transition-shadow">
+          <div 
+            class="card bg-base-100 shadow-xl hover:shadow-2xl transition-shadow cursor-move"
+            draggable="true"
+            on:dragstart={(e) => handleDragStart(e, material)}
+            on:dragend={handleDragEnd}
+            on:dragover={handleDragOver}
+            on:dragenter={(e) => handleDragEnter(e, material)}
+            on:dragleave={handleDragLeave}
+            on:drop={(e) => handleDrop(e, material)}
+          >
             <div class="card-body">
               <div class="flex items-start justify-between mb-2">
-                <div class="text-2xl">{getFileTypeIcon(material.file_type)}</div>
-                <div class="dropdown dropdown-end">
-                  <div tabindex="0" role="button" class="btn btn-ghost btn-sm">
-                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                <div class="relative">
+                  <div class="text-2xl {getFileTypeColor(material.file_type)}">{getFileTypeIcon(material.file_type)}</div>
+                  {#if material.is_extracted}
+                    <div class="absolute -top-1 -right-1 w-4 h-4 bg-success text-success-content rounded-full flex items-center justify-center text-xs">
+                      ✓
+                    </div>
+                  {/if}
+                </div>
+                <div class="flex flex-col items-end gap-1">
+                  <!-- 추출 상태 배지 -->
+                  {#if material.is_extracted}
+                    <div class="badge badge-success badge-xs">
+                      추출완료 ({material.extracted_count}개)
+                    </div>
+                  {:else}
+                    <div class="badge badge-ghost badge-xs">추출 전</div>
+                  {/if}
+                  
+                  <!-- 드롭다운 메뉴 -->
+                  <div class="dropdown dropdown-end">
+                    <div tabindex="0" role="button" class="btn btn-ghost btn-sm">
+                      <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                       <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"></path>
                     </svg>
                   </div>
@@ -198,6 +393,16 @@
               
               <h2 class="card-title text-sm mb-2">{material.title}</h2>
               
+              <!-- 폴더 경로 및 과목 -->
+              <div class="flex flex-wrap gap-1 mb-2">
+                {#if material.subject}
+                  <span class="badge badge-primary badge-xs">{material.subject}</span>
+                {/if}
+                {#if material.folder_path && material.folder_path !== '/'}
+                  <span class="badge badge-outline badge-xs">📁 {material.folder_path}</span>
+                {/if}
+              </div>
+              
               <div class="text-xs text-base-content/70 space-y-1">
                 {#if material.file_type}
                   <p>{material.file_type.split('/')[1].toUpperCase()}</p>
@@ -209,6 +414,9 @@
                   <p>{material.pages}페이지</p>
                 {/if}
                 <p>{formatDate(material.created_at)}</p>
+                {#if material.is_extracted && material.extraction_date}
+                  <p class="text-success">추출일: {formatDate(material.extraction_date)}</p>
+                {/if}
               </div>
               
               <div class="card-actions justify-end mt-4">
@@ -238,7 +446,8 @@
               <tr>
                 <th>파일</th>
                 <th>이름</th>
-                <th>유형</th>
+                <th>과목/폴더</th>
+                <th>추출상태</th>
                 <th>크기</th>
                 <th>페이지</th>
                 <th>생성일</th>
@@ -247,17 +456,50 @@
             </thead>
             <tbody>
               {#each filteredMaterials as material}
-                <tr class="hover:bg-base-200">
+                <tr 
+                  class="hover:bg-base-200 cursor-move"
+                  draggable="true"
+                  on:dragstart={(e) => handleDragStart(e, material)}
+                  on:dragend={handleDragEnd}
+                  on:dragover={handleDragOver}
+                  on:dragenter={(e) => handleDragEnter(e, material)}
+                  on:dragleave={handleDragLeave}
+                  on:drop={(e) => handleDrop(e, material)}
+                >
                   <td>
-                    <div class="text-2xl">{getFileTypeIcon(material.file_type)}</div>
+                    <div class="relative">
+                      <div class="text-2xl {getFileTypeColor(material.file_type)}">{getFileTypeIcon(material.file_type)}</div>
+                      {#if material.is_extracted}
+                        <div class="absolute -top-1 -right-1 w-3 h-3 bg-success text-success-content rounded-full flex items-center justify-center text-xs">
+                          ✓
+                        </div>
+                      {/if}
+                    </div>
                   </td>
                   <td>
                     <div class="font-medium">{material.title}</div>
-                  </td>
-                  <td>
-                    <div class="badge badge-ghost">
+                    <div class="text-xs text-base-content/70">
                       {material.file_type ? material.file_type.split('/')[1].toUpperCase() : '-'}
                     </div>
+                  </td>
+                  <td>
+                    <div class="flex flex-col gap-1">
+                      {#if material.subject}
+                        <span class="badge badge-primary badge-xs">{material.subject}</span>
+                      {/if}
+                      {#if material.folder_path && material.folder_path !== '/'}
+                        <span class="badge badge-outline badge-xs text-xs">📁 {material.folder_path}</span>
+                      {/if}
+                    </div>
+                  </td>
+                  <td>
+                    {#if material.is_extracted}
+                      <div class="badge badge-success badge-sm">
+                        추출완료 ({material.extracted_count}개)
+                      </div>
+                    {:else}
+                      <div class="badge badge-ghost badge-sm">추출 전</div>
+                    {/if}
                   </td>
                   <td>
                     <span class="text-sm">
@@ -270,9 +512,12 @@
                     </span>
                   </td>
                   <td>
-                    <span class="text-sm text-base-content/70">
-                      {formatDate(material.created_at)}
-                    </span>
+                    <div class="text-sm text-base-content/70">
+                      <div>{formatDate(material.created_at)}</div>
+                      {#if material.is_extracted && material.extraction_date}
+                        <div class="text-success text-xs">추출: {formatDate(material.extraction_date)}</div>
+                      {/if}
+                    </div>
                   </td>
                   <td class="text-right">
                     <div class="flex gap-2 justify-end">
