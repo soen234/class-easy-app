@@ -3,8 +3,7 @@
   
   const tabs = [
     { id: 'original', label: '원본 자료' },
-    { id: 'lesson', label: '제작한 자료' },
-    { id: 'question-bank', label: '문제 은행' }
+    { id: 'lesson', label: '제작한 자료' }
   ];
   
   function handleTabClick(tabId) {

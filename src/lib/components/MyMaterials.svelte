@@ -1,7 +1,6 @@
 <script>
   import TabNavigation from './TabNavigation.svelte';
   import MaterialList from './MaterialList.svelte';
-  import QuestionBank from './QuestionBank.svelte';
   import { writable } from 'svelte/store';
 
   const activeTab = writable('original');
@@ -27,10 +26,6 @@
   <TabNavigation {activeTab} />
   
   <div class="mt-6">
-    {#if currentTab === 'original' || currentTab === 'lesson'}
-      <MaterialList type={currentTab} />
-    {:else if currentTab === 'question-bank'}
-      <QuestionBank />
-    {/if}
+    <MaterialList type={currentTab} />
   </div>
 </div>

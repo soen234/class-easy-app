@@ -7,12 +7,20 @@
   export let type = 'original';
   
   let filteredMaterials = [];
+  let displayItems = [];
+  let subjects = [];
   let searchTerm = '';
   let sortBy = 'created_at';
   let sortOrder = 'desc';
   let viewType = 'grid'; // 'grid' or 'list'
   let selectedSubject = 'all';
   let selectedExtractionStatus = 'all';
+  
+  // 타입이 변경될 때마다 필터 초기화
+  $: if (type) {
+    selectedSubject = 'all';
+    selectedExtractionStatus = 'all';
+  }
   let currentFolder = '/';
   let draggedMaterial = null;
   let dropTarget = null;
@@ -23,8 +31,6 @@
   $: if ($user?.id && type) {
     loadMaterials();
   }
-
-  // 구글 드라이브 스타일 폴더 구조 구현
   $: displayItems = getDisplayItems($materials, type, currentFolder);
   $: subjects = getUniqueSubjects($materials, type);
   $: filteredMaterials = getFilteredDisplayItems(displayItems);
@@ -36,55 +42,77 @@
     // 현재 폴더 깊이 계산
     const currentDepth = currentFolder === '/' ? 0 : currentFolder.split('/').length - 1;
     
-    materials
-      .filter(m => m.type === type)
-      .forEach(material => {
+    const filteredMaterials = materials.filter(m => m.type === type);
+    
+    filteredMaterials.forEach(material => {
         const folderPath = material.folder_path || '/';
         
-        // 현재 폴더 하위에 있는 경우만 처리
-        if (folderPath.startsWith(currentFolder === '/' ? '/' : currentFolder + '/') || 
-            (currentFolder === '/' && folderPath === '/')) {
-          
-          // 직접 하위 폴더 찾기
-          if (folderPath !== currentFolder && folderPath !== '/') {
-            const pathParts = folderPath.split('/').filter(Boolean);
-            if (pathParts.length > currentDepth) {
-              const nextFolderPath = '/' + pathParts.slice(0, currentDepth + 1).join('/');
-              if (!folderSet.has(nextFolderPath)) {
-                folderSet.add(nextFolderPath);
-                items.push({
-                  type: 'folder',
-                  id: 'folder-' + nextFolderPath,
-                  name: pathParts[currentDepth],
-                  path: nextFolderPath,
-                  count: materials.filter(m => 
-                    m.type === type && 
-                    (m.folder_path || '/').startsWith(nextFolderPath)
-                  ).length
-                });
-              }
+        // 현재 폴더의 직접 파일들 먼저 추가
+        if (folderPath === currentFolder) {
+          const fileItem = {
+            ...material,
+            type: 'file'
+          };
+          items.push(fileItem);
+          return;
+        }
+        
+        // 현재 폴더의 하위 폴더들만 표시
+        if (currentFolder === '/' && folderPath !== '/') {
+          // 루트에서는 첫 번째 레벨 폴더만
+          const pathParts = folderPath.split('/').filter(Boolean);
+          if (pathParts.length > 0) {
+            const nextFolderPath = '/' + pathParts[0];
+            if (!folderSet.has(nextFolderPath)) {
+              folderSet.add(nextFolderPath);
+              items.push({
+                type: 'folder',
+                id: 'folder-' + nextFolderPath,
+                name: pathParts[0],
+                path: nextFolderPath,
+                count: materials.filter(m => 
+                  m.type === type && 
+                  (m.folder_path || '/').startsWith(nextFolderPath)
+                ).length
+              });
             }
           }
+        } else if (currentFolder !== '/' && folderPath.startsWith(currentFolder + '/')) {
+          // 현재 폴더의 직접 하위 폴더만
+          const relativePath = folderPath.substring(currentFolder.length + 1);
+          const nextFolderName = relativePath.split('/')[0];
+          const nextFolderPath = currentFolder + '/' + nextFolderName;
           
-          // 현재 폴더의 직접 파일들
-          if (folderPath === currentFolder) {
+          if (!folderSet.has(nextFolderPath)) {
+            folderSet.add(nextFolderPath);
             items.push({
-              type: 'file',
-              ...material
+              type: 'folder',
+              id: 'folder-' + nextFolderPath,
+              name: nextFolderName,
+              path: nextFolderPath,
+              count: materials.filter(m => 
+                m.type === type && 
+                (m.folder_path || '/').startsWith(nextFolderPath)
+              ).length
             });
           }
         }
       });
     
+    
     // 폴더를 먼저, 그 다음 파일들을 정렬
-    return items.sort((a, b) => {
+    const result = items.sort((a, b) => {
       if (a.type === 'folder' && b.type === 'file') return -1;
       if (a.type === 'file' && b.type === 'folder') return 1;
       return (a.name || a.title).localeCompare(b.name || b.title);
     });
+    
+    
+    return result;
   }
 
   function getFilteredDisplayItems(items) {
+    
     let filtered = items.filter(item => {
       if (item.type === 'folder') {
         // 폴더는 항상 표시
@@ -97,6 +125,7 @@
         const matchesExtractionStatus = selectedExtractionStatus === 'all' || 
           (selectedExtractionStatus === 'extracted' && item.is_extracted) ||
           (selectedExtractionStatus === 'not_extracted' && !item.is_extracted);
+        
         
         return matchesSearch && matchesSubject && matchesExtractionStatus;
       }
@@ -159,7 +188,8 @@
   }
 
   function handleExtract(material) {
-    console.log('문항 추출:', material);
+    // 선택된 자료의 ID를 URL 파라미터로 전달하여 문항 추출 페이지로 이동
+    goto(`/extract?materialId=${material.id}`);
   }
 
   function handleEdit(material) {
@@ -412,12 +442,14 @@
       </div>
       
       <!-- 액션 버튼 -->
-      <button class="btn btn-primary" on:click={handleUpload}>
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
-        </svg>
-        자료 올리기
-      </button>
+      {#if type === 'original'}
+        <button class="btn btn-primary" on:click={handleUpload}>
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+          </svg>
+          자료 올리기
+        </button>
+      {/if}
       
       <button class="btn btn-success" on:click={handleCreate}>
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -474,7 +506,7 @@
                       </div>
                     {/if}
                   </div>
-                  <div class="badge badge-success badge-xs">
+                  <div class="badge {item.is_extracted ? 'badge-success' : 'badge-warning'} badge-xs">
                     {#if item.is_extracted}
                       추출완료 ({item.extracted_count}개)
                     {:else}
@@ -502,12 +534,14 @@
                 </div>
                 
                 <div class="card-actions justify-end mt-4">
-                  <button 
-                    class="btn btn-primary btn-sm" 
-                    on:click={() => handleExtract(item)}
-                  >
-                    문항 추출
-                  </button>
+                  {#if type === 'original'}
+                    <button 
+                      class="btn btn-primary btn-sm" 
+                      on:click={() => handleExtract(item)}
+                    >
+                      문항 추출
+                    </button>
+                  {/if}
                   <button 
                     class="btn btn-ghost btn-sm"
                     on:click={() => handleEdit(item)}
@@ -621,7 +655,7 @@
                           추출완료 ({item.extracted_count}개)
                         </div>
                       {:else}
-                        <div class="badge badge-ghost badge-sm">추출 전</div>
+                        <div class="badge badge-warning badge-sm">추출 전</div>
                       {/if}
                     </td>
                     <td>
@@ -644,12 +678,14 @@
                     </td>
                     <td class="text-right">
                       <div class="flex gap-2 justify-end">
-                        <button 
-                          class="btn btn-primary btn-xs" 
-                          on:click={() => handleExtract(item)}
-                        >
-                          문항 추출
-                        </button>
+                        {#if type === 'original'}
+                          <button 
+                            class="btn btn-primary btn-xs" 
+                            on:click={() => handleExtract(item)}
+                          >
+                            문항 추출
+                          </button>
+                        {/if}
                         <div class="dropdown dropdown-end">
                           <div tabindex="0" role="button" class="btn btn-ghost btn-xs">
                             <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
@@ -683,7 +719,9 @@
           새 자료를 업로드하거나 만들어보세요
         </p>
         <div class="flex gap-2 justify-center">
-          <button class="btn btn-primary" on:click={handleUpload}>자료 올리기</button>
+          {#if type === 'original'}
+            <button class="btn btn-primary" on:click={handleUpload}>자료 올리기</button>
+          {/if}
           <button class="btn btn-outline" on:click={handleCreate}>자료 만들기</button>
         </div>
       </div>
