@@ -282,11 +282,11 @@
         필터
       </div>
       <div class="collapse-content">
-        <div class="space-y-4">
+        <div class="space-y-2">
           <!-- 블록 타입 필터 -->
-          <div class="border-b pb-4">
-            <h4 class="font-medium mb-2">블록 타입</h4>
-            <div class="flex flex-wrap gap-2">
+          <div class="flex items-start gap-4">
+            <div class="w-24 font-medium text-sm pt-2">블록 타입</div>
+            <div class="flex-1 flex flex-wrap gap-2">
               {#each [
                 { value: 'question', label: '문항' },
                 { value: 'passage', label: '지문' },
@@ -295,7 +295,7 @@
                 { value: 'example', label: '예제' },
                 { value: 'note', label: '참고' }
               ] as type}
-                <label class="label cursor-pointer">
+                <label class="label cursor-pointer py-1">
                   <input
                     type="checkbox"
                     class="checkbox checkbox-sm mr-2"
@@ -309,16 +309,16 @@
           </div>
 
           <!-- 문항 서브타입 필터 -->
-          <div class="border-b pb-4">
-            <h4 class="font-medium mb-2">문항 유형</h4>
-            <div class="flex flex-wrap gap-2">
+          <div class="flex items-start gap-4">
+            <div class="w-24 font-medium text-sm pt-2">문항 유형</div>
+            <div class="flex-1 flex flex-wrap gap-2">
               {#each [
                 { value: 'multiple_choice', label: '객관식' },
                 { value: 'short_answer', label: '단답형' },
                 { value: 'essay', label: '서술형' },
                 { value: 'true_false', label: 'O/X' }
               ] as subtype}
-                <label class="label cursor-pointer">
+                <label class="label cursor-pointer py-1">
                   <input
                     type="checkbox"
                     class="checkbox checkbox-sm mr-2"
@@ -332,15 +332,15 @@
           </div>
 
           <!-- 난이도 필터 -->
-          <div class="border-b pb-4">
-            <h4 class="font-medium mb-2">난이도</h4>
-            <div class="flex flex-wrap gap-2">
+          <div class="flex items-start gap-4">
+            <div class="w-24 font-medium text-sm pt-2">난이도</div>
+            <div class="flex-1 flex flex-wrap gap-2">
               {#each [
                 { value: 'easy', label: '쉬움' },
                 { value: 'medium', label: '보통' },
                 { value: 'hard', label: '어려움' }
               ] as difficulty}
-                <label class="label cursor-pointer">
+                <label class="label cursor-pointer py-1">
                   <input
                     type="checkbox"
                     class="checkbox checkbox-sm mr-2"
@@ -354,11 +354,11 @@
           </div>
 
           <!-- 과목 필터 -->
-          <div class="border-b pb-4">
-            <h4 class="font-medium mb-2">과목</h4>
-            <div class="flex flex-wrap gap-2">
+          <div class="flex items-start gap-4">
+            <div class="w-24 font-medium text-sm pt-2">과목</div>
+            <div class="flex-1 flex flex-wrap gap-2">
               {#each getUniqueSubjects() as subject}
-                <label class="label cursor-pointer">
+                <label class="label cursor-pointer py-1">
                   <input
                     type="checkbox"
                     class="checkbox checkbox-sm mr-2"
@@ -373,11 +373,11 @@
 
           <!-- 커스텀 태그 필터 -->
           {#if availableCustomTags.length > 0}
-            <div>
-              <h4 class="font-medium mb-2">커스텀 태그</h4>
-              <div class="flex flex-wrap gap-2">
+            <div class="flex items-start gap-4">
+              <div class="w-24 font-medium text-sm pt-2">커스텀 태그</div>
+              <div class="flex-1 flex flex-wrap gap-2">
                 {#each availableCustomTags as tag}
-                  <label class="label cursor-pointer">
+                  <label class="label cursor-pointer py-1">
                     <input
                       type="checkbox"
                       class="checkbox checkbox-sm mr-2"
@@ -404,9 +404,9 @@
     <!-- 블록 목록 -->
     {#if viewType === 'grid'}
       <!-- 카드 뷰 -->
-      <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
+      <div class="grid gap-4" style="grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));">
         {#each filteredBlocks as block}
-          <div class="card bg-base-100 shadow hover:shadow-lg transition-shadow {selectedBlocks.has(block.id) ? 'ring-2 ring-primary' : ''}" style="min-width: 200px; max-width: 350px;">
+          <div class="card bg-base-100 shadow hover:shadow-lg transition-shadow {selectedBlocks.has(block.id) ? 'ring-2 ring-primary' : ''}" style="max-width: 350px;">
             <div class="card-body p-4">
               <div class="flex items-center gap-2 mb-2">
                 <input
@@ -471,10 +471,10 @@
       <!-- 리스트 뷰 -->
       <div class="bg-base-100 rounded-lg shadow">
         <div class="overflow-x-auto">
-          <table class="table table-sm">
+          <table class="table table-sm w-full">
             <thead>
               <tr>
-                <th>
+                <th class="w-10">
                   <input
                     type="checkbox"
                     class="checkbox checkbox-sm"
@@ -482,12 +482,12 @@
                     on:change={toggleAllSelection}
                   />
                 </th>
-                <th>타입</th>
+                <th class="w-32 min-w-[8rem]">타입</th>
                 <th>내용</th>
-                <th>난이도</th>
-                <th>커스텀 태그</th>
-                <th>생성일</th>
-                <th class="text-right">액션</th>
+                <th class="w-20 min-w-[5rem]">난이도</th>
+                <th class="w-48 min-w-[12rem]">커스텀 태그</th>
+                <th class="w-24 min-w-[6rem]">생성일</th>
+                <th class="w-16 text-right">액션</th>
               </tr>
             </thead>
             <tbody>
@@ -501,7 +501,7 @@
                       on:change={() => toggleBlockSelection(block.id)}
                     />
                   </td>
-                  <td>
+                  <td class="whitespace-nowrap">
                     <div class="flex items-center gap-2">
                       <span class="text-lg">{getBlockTypeIcon(block.type)}</span>
                       <div>
@@ -513,7 +513,7 @@
                     </div>
                   </td>
                   <td>
-                    <div class="max-w-md">
+                    <div class="min-w-0">
                       <p class="text-sm truncate">{block.content || ''}</p>
                       {#if block.correct_answer}
                         <p class="text-xs text-base-content/70">정답: {block.correct_answer}</p>
@@ -526,7 +526,7 @@
                     </div>
                   </td>
                   <td>
-                    <div class="flex flex-wrap gap-1 max-w-xs">
+                    <div class="flex flex-wrap gap-1">
                       {#if block.custom_tags}
                         {#each block.custom_tags as tag}
                           <div class="badge badge-outline badge-xs">{tag}</div>
@@ -534,7 +534,7 @@
                       {/if}
                     </div>
                   </td>
-                  <td>
+                  <td class="whitespace-nowrap">
                     <div class="text-sm">{formatDate(block.created_at)}</div>
                   </td>
                   <td class="text-right">
