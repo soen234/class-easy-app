@@ -14,11 +14,16 @@
   let filterSubjects = [];
   let selectedMaterial = 'all';
   let viewType = 'grid';
+  let selectedBlocks = new Set();
+  let showCreateFromSelected = false;
 
   // 사용자가 변경될 때 데이터 재조회
   $: if ($user?.id) {
     loadBlocks();
   }
+
+  // 선택된 문항이 있을 때만 버튼 표시
+  $: showCreateFromSelected = selectedBlocks.size > 0;
 
   // 검색, 필터, 정렬 적용
   $: {
@@ -64,8 +69,31 @@
   // handleUpload 제거
 
   function handleCreate() {
-    // TODO: 문항 만들기 페이지로 이동
-    console.log('문항 만들기');
+    goto('/templates');
+  }
+
+  function handleCreateFromSelected() {
+    // 선택된 문항들을 localStorage에 저장
+    const selectedQuestions = filteredBlocks.filter(block => selectedBlocks.has(block.id));
+    localStorage.setItem('selectedQuestions', JSON.stringify(selectedQuestions));
+    goto('/templates?from=question-bank');
+  }
+
+  function toggleBlockSelection(blockId) {
+    if (selectedBlocks.has(blockId)) {
+      selectedBlocks.delete(blockId);
+    } else {
+      selectedBlocks.add(blockId);
+    }
+    selectedBlocks = new Set(selectedBlocks);
+  }
+
+  function toggleAllSelection() {
+    if (selectedBlocks.size === filteredBlocks.length) {
+      selectedBlocks = new Set();
+    } else {
+      selectedBlocks = new Set(filteredBlocks.map(block => block.id));
+    }
   }
 
   function handleEdit(block) {
@@ -186,11 +214,19 @@
       </div>
       
       <!-- 액션 버튼 -->
+      {#if showCreateFromSelected}
+        <button class="btn btn-primary" on:click={handleCreateFromSelected}>
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path>
+          </svg>
+          선택된 문항으로 자료 만들기 ({selectedBlocks.size}개)
+        </button>
+      {/if}
       <button class="btn btn-success" on:click={handleCreate}>
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
         </svg>
-        문항 만들기
+        자료 만들기
       </button>
     </div>
   </div>
@@ -285,8 +321,16 @@
       <!-- 카드 뷰 -->
       <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
         {#each filteredBlocks as block}
-          <div class="card bg-base-100 shadow hover:shadow-lg transition-shadow compact">
+          <div class="card bg-base-100 shadow hover:shadow-lg transition-shadow compact {selectedBlocks.has(block.id) ? 'ring-2 ring-primary' : ''}">
             <div class="card-body p-3">
+              <div class="flex items-center gap-2 mb-2">
+                <input
+                  type="checkbox"
+                  class="checkbox checkbox-sm"
+                  checked={selectedBlocks.has(block.id)}
+                  on:change={() => toggleBlockSelection(block.id)}
+                />
+              </div>
               <div class="flex items-start justify-between mb-2">
                 <div class="text-lg">{getQuestionTypeIcon(block.type)}</div>
                 <div class="dropdown dropdown-end">
@@ -347,6 +391,14 @@
           <table class="table table-sm">
             <thead>
               <tr>
+                <th>
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-sm"
+                    checked={selectedBlocks.size === filteredBlocks.length && filteredBlocks.length > 0}
+                    on:change={toggleAllSelection}
+                  />
+                </th>
                 <th>문항</th>
                 <th>타입</th>
                 <th>난이도</th>
@@ -359,7 +411,15 @@
             </thead>
             <tbody>
               {#each filteredBlocks as block}
-                <tr class="hover">
+                <tr class="hover {selectedBlocks.has(block.id) ? 'bg-primary/10' : ''}">
+                  <td>
+                    <input
+                      type="checkbox"
+                      class="checkbox checkbox-sm"
+                      checked={selectedBlocks.has(block.id)}
+                      on:change={() => toggleBlockSelection(block.id)}
+                    />
+                  </td>
                   <td>
                     <div class="font-medium text-sm max-w-md truncate">{block.question}</div>
                     {#if block.tags && block.tags.length > 0}

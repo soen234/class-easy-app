@@ -184,7 +184,7 @@
   }
 
   function handleCreate() {
-    console.log('자료 만들기');
+    goto('/create-material');
   }
 
   function handleExtract(material) {

@@ -669,3 +669,77 @@ export function getFileTypeColor(type) {
   
   return 'text-base-content';
 }
+
+// 새 자료 생성
+export function createMaterial(materialData) {
+  return new Promise((resolve, reject) => {
+    try {
+      const newMaterial = {
+        id: Date.now().toString(),
+        title: materialData.title,
+        type: 'custom',
+        subject: materialData.subject,
+        grade: materialData.grade,
+        folder_id: materialData.folder_id,
+        folder_path: materialData.folder_id ? getFolderPath(materialData.folder_id) : '/',
+        tags: materialData.tags || [],
+        content: materialData.content,
+        template_id: materialData.template_id,
+        is_public: materialData.is_public || false,
+        created_at: materialData.created_at || new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        user_id: 'demo-user',
+        file_type: 'application/json',
+        file_size: JSON.stringify(materialData.content).length,
+        pages: 1
+      };
+      
+      // Add to store
+      materials.update(items => [...items, newMaterial]);
+      dummyMaterials.push(newMaterial);
+      
+      // In real app, would save to Supabase
+      // const { data, error } = await supabase
+      //   .from('materials')
+      //   .insert(newMaterial);
+      
+      resolve(newMaterial);
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+// Helper function to get folder path
+function getFolderPath(folderId) {
+  const folders = getFolderStructure();
+  const folder = folders.find(f => f.id === folderId);
+  return folder ? folder.path : '/';
+}
+
+// Get folder structure
+export function getFolderStructure() {
+  let currentMaterials;
+  materials.subscribe(value => currentMaterials = value)();
+  
+  const folders = [];
+  currentMaterials.forEach(material => {
+    if (material.folder_path && material.folder_path !== '/') {
+      const parts = material.folder_path.split('/').filter(p => p);
+      let currentPath = '';
+      parts.forEach((part, index) => {
+        currentPath += '/' + part;
+        if (!folders.find(f => f.path === currentPath)) {
+          folders.push({
+            id: `folder-${currentPath}`,
+            name: part,
+            path: currentPath,
+            level: index
+          });
+        }
+      });
+    }
+  });
+  
+  return folders;
+}

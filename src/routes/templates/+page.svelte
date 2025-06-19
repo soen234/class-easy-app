@@ -2,129 +2,68 @@
   import { onMount } from 'svelte';
   import { user } from '$lib/stores/auth.js';
   import { goto } from '$app/navigation';
+  import { page } from '$app/stores';
+  import { templates, getCategoryLabel, getDifficultyLabel, getDifficultyColor } from '$lib/stores/templates.js';
   
-  let templates = [
-    {
-      id: 'exam-basic',
-      name: '기본 시험지',
-      description: '가장 일반적인 형태의 시험지 템플릿',
-      category: 'exam',
-      difficulty: 'easy',
-      estimatedTime: '10분',
-      preview: '/images/template-exam-basic.png',
-      features: ['헤더 정보', '문제 영역', '답안 영역', '채점표'],
-      tags: ['시험', '기본', '객관식', '주관식']
-    },
-    {
-      id: 'exam-advanced',
-      name: '고급 시험지',
-      description: '복잡한 구조의 시험지를 위한 템플릿',
-      category: 'exam',
-      difficulty: 'hard',
-      estimatedTime: '20분',
-      preview: '/images/template-exam-advanced.png',
-      features: ['다단계 섹션', '복합 문제', '부분 점수', '상세 채점'],
-      tags: ['시험', '고급', '복합문제', '서술형']
-    },
-    {
-      id: 'worksheet-practice',
-      name: '연습 학습지',
-      description: '학생 연습용 학습지 템플릿',
-      category: 'worksheet',
-      difficulty: 'easy',
-      estimatedTime: '15분',
-      preview: '/images/template-worksheet.png',
-      features: ['개념 설명', '예제', '연습 문제', '정답 및 해설'],
-      tags: ['학습지', '연습', '개념', '예제']
-    },
-    {
-      id: 'quiz-quick',
-      name: '빠른 퀴즈',
-      description: '간단한 퀴즈나 확인 문제용 템플릿',
-      category: 'quiz',
-      difficulty: 'easy',
-      estimatedTime: '5분',
-      preview: '/images/template-quiz.png',
-      features: ['간결한 구성', '즉석 채점', '시각적 피드백'],
-      tags: ['퀴즈', '간단', '확인', '피드백']
-    },
-    {
-      id: 'homework-weekly',
-      name: '주간 과제',
-      description: '일주일 단위의 과제 템플릿',
-      category: 'homework',
-      difficulty: 'medium',
-      estimatedTime: '25분',
-      preview: '/images/template-homework.png',
-      features: ['주차별 구분', '진도 체크', '자기평가', '교사 피드백'],
-      tags: ['과제', '주간', '진도', '평가']
-    },
-    {
-      id: 'assessment-rubric',
-      name: '평가 루브릭',
-      description: '체계적인 평가를 위한 루브릭 템플릿',
-      category: 'assessment',
-      difficulty: 'medium',
-      estimatedTime: '30분',
-      preview: '/images/template-rubric.png',
-      features: ['평가 기준', '점수 배분', '상세 피드백', '개선 사항'],
-      tags: ['평가', '루브릭', '기준', '피드백']
-    }
-  ];
-  
-  let filteredTemplates = templates;
+  let allTemplates = [];
+  let filteredTemplates = [];
   let selectedCategory = 'all';
   let selectedDifficulty = 'all';
   let searchTerm = '';
+  let showCustomOnly = false;
+  let fromQuestionBank = false;
+  let selectedQuestions = [];
+  
+  // Load templates on mount
+  onMount(() => {
+    allTemplates = templates.getAllTemplates();
+    
+    // Check if coming from question bank
+    fromQuestionBank = $page.url.searchParams.get('from') === 'question-bank';
+    if (fromQuestionBank) {
+      const stored = localStorage.getItem('selectedQuestions');
+      if (stored) {
+        selectedQuestions = JSON.parse(stored);
+      }
+    }
+  });
+  
+  // Subscribe to template changes
+  $: {
+    allTemplates = $templates ? [...$templates.templates, ...$templates.customTemplates] : [];
+  }
   
   // 필터링 적용
   $: {
-    filteredTemplates = templates.filter(template => {
-      const matchesCategory = selectedCategory === 'all' || template.category === selectedCategory;
-      const matchesDifficulty = selectedDifficulty === 'all' || template.difficulty === selectedDifficulty;
-      const matchesSearch = !searchTerm || 
-        template.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        template.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        template.tags.some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()));
-      
-      return matchesCategory && matchesDifficulty && matchesSearch;
+    filteredTemplates = templates.filterTemplates({
+      category: selectedCategory,
+      difficulty: selectedDifficulty,
+      search: searchTerm
+    }).filter(template => {
+      if (showCustomOnly) {
+        return template.isCustom;
+      }
+      return true;
     });
   }
   
-  function getCategoryLabel(category) {
-    const labels = {
-      'exam': '시험지',
-      'worksheet': '학습지',
-      'quiz': '퀴즈',
-      'homework': '과제',
-      'assessment': '평가'
-    };
-    return labels[category] || category;
-  }
-  
-  function getDifficultyLabel(difficulty) {
-    const labels = {
-      'easy': '쉬움',
-      'medium': '보통',
-      'hard': '어려움'
-    };
-    return labels[difficulty] || difficulty;
-  }
-  
-  function getDifficultyColor(difficulty) {
-    const colors = {
-      'easy': 'badge-success',
-      'medium': 'badge-warning',
-      'hard': 'badge-error'
-    };
-    return colors[difficulty] || 'badge-ghost';
-  }
   
   function useTemplate(template) {
-    // 템플릿을 사용하여 편집기로 이동
-    console.log('템플릿 사용:', template);
-    // 실제로는 템플릿 데이터를 편집기로 전달
-    goto(`/editor?template=${template.id}`);
+    // 템플릿을 사용하여 자료 생성 페이지로 이동
+    if (fromQuestionBank) {
+      goto(`/create-material?template=${template.id}&from=question-bank`);
+    } else {
+      goto(`/create-material?template=${template.id}`);
+    }
+  }
+  
+  function createFromTemplate(template) {
+    // 템플릿으로부터 새 자료 만들기
+    if (fromQuestionBank) {
+      goto(`/create-material?template=${template.id}&from=question-bank`);
+    } else {
+      goto(`/create-material?template=${template.id}`);
+    }
   }
   
   function previewTemplate(template) {
@@ -150,10 +89,22 @@
     <div class="breadcrumbs text-sm">
       <ul>
         <li><a href="/">홈</a></li>
+        {#if fromQuestionBank}
+          <li><a href="/question-bank">문제 은행</a></li>
+        {/if}
         <li>템플릿</li>
       </ul>
     </div>
   </div>
+  
+  {#if fromQuestionBank && selectedQuestions.length > 0}
+    <div class="alert alert-info">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+      </svg>
+      <span>{selectedQuestions.length}개의 문항이 선택되었습니다. 템플릿을 선택하여 자료를 만들어보세요.</span>
+    </div>
+  {/if}
 
   <!-- 필터 및 검색 -->
   <div class="card bg-base-100 shadow">
@@ -187,12 +138,20 @@
             <option value="hard">어려움</option>
           </select>
           
-          <button class="btn btn-primary">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
-            </svg>
-            새 템플릿
-          </button>
+          <div class="flex gap-2">
+            <label class="form-control">
+              <label class="label cursor-pointer">
+                <span class="label-text mr-2">내 템플릿만</span>
+                <input type="checkbox" bind:checked={showCustomOnly} class="checkbox checkbox-sm" />
+              </label>
+            </label>
+            <button class="btn btn-primary">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+              </svg>
+              새 템플릿
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -281,9 +240,9 @@
             </div>
             <button 
               class="btn btn-primary btn-sm"
-              on:click={() => useTemplate(template)}
+              on:click={() => createFromTemplate(template)}
             >
-              사용하기
+              자료 만들기
             </button>
           </div>
         </div>
@@ -327,9 +286,9 @@
         <div class="text-4xl mb-4">📁</div>
         <h3 class="text-lg font-medium mb-2">사용자 정의 템플릿이 없습니다</h3>
         <p class="text-base-content/70 mb-4">
-          편집기에서 문서를 만들고 템플릿으로 저장해보세요
+          자료를 만들고 템플릿으로 저장하여 재사용해보세요
         </p>
-        <a href="/editor" class="btn btn-primary">편집기로 이동</a>
+        <a href="/create-material" class="btn btn-primary">자료 만들기</a>
       </div>
     </div>
   </div>

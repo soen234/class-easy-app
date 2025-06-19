@@ -1,8 +1,10 @@
 <script>
   import { onMount } from 'svelte';
+  import { page } from '$app/stores';
   import { user } from '$lib/stores/auth.js';
   import { blocks, fetchBlocks } from '$lib/stores/blocks.js';
   import { materials, fetchMaterials } from '$lib/stores/materials.js';
+  import { templates } from '$lib/stores/templates.js';
   
   let editorMode = 'document'; // 'document', 'question', 'template'
   let documentContent = '';
@@ -42,6 +44,16 @@
     if ($user?.id) {
       fetchBlocks($user.id);
       fetchMaterials($user.id);
+    }
+    
+    // Check if template ID is provided in URL
+    const templateId = $page.url.searchParams.get('template');
+    if (templateId) {
+      const template = templates.getTemplateById(templateId);
+      if (template) {
+        documentTitle = `새 ${template.name}`;
+        documentStructure = JSON.parse(JSON.stringify(template.structure || []));
+      }
     }
   });
   
@@ -99,6 +111,29 @@
       type: editorMode
     });
     alert('문서가 저장되었습니다!');
+  }
+  
+  function saveAsTemplate() {
+    const templateName = prompt('템플릿 이름을 입력하세요:');
+    if (!templateName) return;
+    
+    const newTemplate = {
+      name: templateName,
+      description: prompt('템플릿 설명을 입력하세요:') || '',
+      category: 'custom',
+      difficulty: 'medium',
+      estimatedTime: '15분',
+      features: [],
+      tags: ['사용자정의'],
+      structure: documentStructure.map(el => ({
+        ...el,
+        editable: true
+      }))
+    };
+    
+    templates.addCustomTemplate(newTemplate);
+    templates.saveCustomTemplates();
+    alert('템플릿이 저장되었습니다!');
   }
   
   function exportDocument(format) {
@@ -408,6 +443,9 @@
             <div class="space-y-2">
               <button class="btn btn-primary w-full" on:click={saveDocument}>
                 저장
+              </button>
+              <button class="btn btn-secondary w-full" on:click={saveAsTemplate}>
+                템플릿으로 저장
               </button>
               <div class="dropdown dropdown-top w-full">
                 <div tabindex="0" role="button" class="btn btn-outline w-full">내보내기</div>

@@ -7,7 +7,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
+    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+    "deploy": "curl -X POST https://api.vercel.com/v1/integrations/deploy/prj_q3ZVe6kYTnr4xnQtWLa40K7ZE6Om/877hJqAg76"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.1.0",
