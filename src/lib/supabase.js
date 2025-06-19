@@ -1,12 +1,16 @@
 import { createClient } from '@supabase/supabase-js'
-import { PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_ANON_KEY } from '$env/static/public'
+import { env } from '$env/dynamic/public'
+
+// 환경 변수가 설정되지 않은 경우 기본값 사용
+const SUPABASE_URL = env.PUBLIC_SUPABASE_URL || ''
+const SUPABASE_ANON_KEY = env.PUBLIC_SUPABASE_ANON_KEY || ''
 
 // 임시로 더미 클라이언트 생성 (실제 Supabase 설정 전까지)
-const isDevelopment = !PUBLIC_SUPABASE_URL || PUBLIC_SUPABASE_URL === 'your_supabase_project_url'
+const isDevelopment = !SUPABASE_URL || SUPABASE_URL === 'your_supabase_project_url' || SUPABASE_URL === ''
 
 export const supabase = isDevelopment 
   ? null  // 개발 중에는 null
-  : createClient(PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_ANON_KEY)
+  : createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 // 인증 관련 헬퍼 함수들
 export async function signUp(email, password) {
