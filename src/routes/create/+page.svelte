@@ -14,9 +14,20 @@
   let fromQuestionBank = false;
   let selectedQuestions = [];
   
+  // Dashboard data
+  let recentProjects = [];
+  let popularTemplates = [];
+  
   // Load templates on mount
   onMount(() => {
     allTemplates = templates.getAllTemplates();
+    
+    // Load popular templates (top 8)
+    popularTemplates = allTemplates.slice(0, 8);
+    
+    // Load recent projects from localStorage (임시)
+    const stored = localStorage.getItem('recentProjects');
+    recentProjects = stored ? JSON.parse(stored) : [];
     
     // Check if coming from question bank
     fromQuestionBank = $page.url.searchParams.get('from') === 'question-bank';
@@ -58,11 +69,11 @@
   }
   
   function createFromTemplate(template) {
-    // 템플릿으로부터 새 자료 만들기
+    // 템플릿으로부터 새 자료 만들기 - 새로운 에디터로 이동
     if (fromQuestionBank) {
-      goto(`/create-material?template=${template.id}&from=question-bank`);
+      goto(`/editor?template=${template.id}&from=question-bank`);
     } else {
-      goto(`/create-material?template=${template.id}`);
+      goto(`/editor?template=${template.id}`);
     }
   }
   
@@ -80,19 +91,19 @@
 </script>
 
 <svelte:head>
-  <title>템플릿 - Class Easy</title>
+  <title>자료 만들기 - Class Easy</title>
 </svelte:head>
 
 <div class="space-y-6">
   <div class="flex flex-col gap-2">
-    <h1 class="text-3xl font-bold">템플릿</h1>
+    <h1 class="text-3xl font-bold">자료 만들기</h1>
     <div class="breadcrumbs text-sm">
       <ul>
         <li><a href="/">홈</a></li>
         {#if fromQuestionBank}
           <li><a href="/question-bank">문제 은행</a></li>
         {/if}
-        <li>템플릿</li>
+        <li>자료 만들기</li>
       </ul>
     </div>
   </div>
@@ -105,11 +116,119 @@
       <span>{selectedQuestions.length}개의 문항이 선택되었습니다. 템플릿을 선택하여 자료를 만들어보세요.</span>
     </div>
   {/if}
-
-  <!-- 필터 및 검색 -->
+  
+  <!-- 최근 프로젝트 섹션 -->
+  {#if recentProjects.length > 0}
+    <div class="card bg-base-100 shadow">
+      <div class="card-body">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="card-title">최근 프로젝트</h2>
+          <a href="/my-materials" class="btn btn-ghost btn-sm">전체 보기</a>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+          {#each recentProjects.slice(0, 6) as project}
+            <div class="card bg-base-200 cursor-pointer hover:shadow-lg transition-shadow">
+              <div class="card-body p-4">
+                <div class="text-4xl text-center mb-2">📄</div>
+                <p class="text-sm font-medium text-center truncate">{project.title}</p>
+                <p class="text-xs text-center text-base-content/60">{new Date(project.updatedAt).toLocaleDateString()}</p>
+              </div>
+            </div>
+          {/each}
+        </div>
+      </div>
+    </div>
+  {/if}
+  
+  <!-- 빠른 시작 버튼들 -->
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <button 
+      class="btn btn-lg btn-outline h-auto py-6"
+      on:click={() => createFromTemplate({ id: 'blank', name: '빈 캔버스' })}
+    >
+      <div class="flex flex-col items-center gap-2">
+        <span class="text-2xl">➕</span>
+        <span>빈 캔버스로 시작</span>
+      </div>
+    </button>
+    <button 
+      class="btn btn-lg btn-outline h-auto py-6"
+      on:click={() => selectedCategory = 'exam'}
+    >
+      <div class="flex flex-col items-center gap-2">
+        <span class="text-2xl">📄</span>
+        <span>시험지 만들기</span>
+      </div>
+    </button>
+    <button 
+      class="btn btn-lg btn-outline h-auto py-6"
+      on:click={() => selectedCategory = 'presentation'}
+    >
+      <div class="flex flex-col items-center gap-2">
+        <span class="text-2xl">🖼️</span>
+        <span>프레젠테이션</span>
+      </div>
+    </button>
+    <button 
+      class="btn btn-lg btn-outline h-auto py-6"
+      on:click={() => selectedCategory = 'flashcard'}
+    >
+      <div class="flex flex-col items-center gap-2">
+        <span class="text-2xl">🎴</span>
+        <span>플래시카드</span>
+      </div>
+    </button>
+  </div>
+  
+  <!-- 인기 템플릿 섹션 -->
   <div class="card bg-base-100 shadow">
     <div class="card-body">
-      <div class="flex flex-col lg:flex-row gap-4 items-center">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="card-title">인기 템플릿</h2>
+        <label class="swap swap-rotate">
+          <input type="checkbox" bind:checked={showCustomOnly} />
+          <div class="swap-off">전체</div>
+          <div class="swap-on">내 템플릿</div>
+        </label>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        {#each popularTemplates as template}
+          <div class="card bg-base-200 hover:shadow-lg transition-shadow cursor-pointer" on:click={() => createFromTemplate(template)}>
+            <div class="card-body p-4">
+              <div class="flex items-start justify-between">
+                <div class="text-3xl">
+                  {#if template.category === 'exam'}📄
+                  {:else if template.category === 'worksheet'}📋
+                  {:else if template.category === 'quiz'}❓
+                  {:else if template.category === 'homework'}📚
+                  {:else if template.category === 'assessment'}📊
+                  {:else if template.category === 'concept'}📖
+                  {:else if template.category === 'presentation'}🖼️
+                  {:else if template.category === 'poster'}📌
+                  {:else if template.category === 'flashcard'}🎴
+                  {/if}
+                </div>
+                <div class="badge badge-sm {getDifficultyColor(template.difficulty)}">
+                  {getDifficultyLabel(template.difficulty)}
+                </div>
+              </div>
+              <h3 class="font-bold text-sm mt-2">{template.name}</h3>
+              <p class="text-xs text-base-content/70 line-clamp-2">{template.description}</p>
+              <div class="text-xs text-base-content/60 mt-2">{template.estimatedTime}</div>
+            </div>
+          </div>
+        {/each}
+      </div>
+    </div>
+  </div>
+
+  <!-- 템플릿 갤러리 섹션 -->
+  <div class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title mb-4">모든 템플릿</h2>
+      
+      <!-- 필터 및 검색 -->
+      <div class="flex flex-col lg:flex-row gap-4 items-center mb-6">
         <!-- 검색 -->
         <div class="flex-1 w-full max-w-md">
           <input
@@ -129,6 +248,10 @@
             <option value="quiz">퀴즈</option>
             <option value="homework">과제</option>
             <option value="assessment">평가</option>
+            <option value="concept">교재</option>
+            <option value="presentation">프레젠테이션</option>
+            <option value="poster">포스터</option>
+            <option value="flashcard">플래시카드</option>
           </select>
           
           <select class="select select-bordered select-sm" bind:value={selectedDifficulty}>
@@ -170,6 +293,10 @@
               {:else if template.category === 'quiz'}❓
               {:else if template.category === 'homework'}📚
               {:else if template.category === 'assessment'}📊
+              {:else if template.category === 'concept'}📖
+              {:else if template.category === 'presentation'}🖼️
+              {:else if template.category === 'poster'}📌
+              {:else if template.category === 'flashcard'}🎴
               {/if}
             </div>
           </div>
@@ -247,7 +374,102 @@
           </div>
         </div>
       </div>
-    {:else}
+      
+      <!-- 템플릿 그리드 -->
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {#each filteredTemplates as template}
+          <div class="card bg-base-100 shadow-xl hover:shadow-2xl transition-all duration-200 hover:-translate-y-1">
+            <!-- 미리보기 이미지 -->
+            <div class="h-48 bg-gradient-to-br from-primary/20 to-secondary/20 relative overflow-hidden">
+              <div class="absolute inset-0 flex items-center justify-center">
+                <div class="text-6xl opacity-30">
+                  {#if template.category === 'exam'}📄
+                  {:else if template.category === 'worksheet'}📋
+                  {:else if template.category === 'quiz'}❓
+                  {:else if template.category === 'homework'}📚
+                  {:else if template.category === 'assessment'}📊
+                  {:else if template.category === 'concept'}📖
+                  {:else if template.category === 'presentation'}🖼️
+                  {:else if template.category === 'poster'}📌
+                  {:else if template.category === 'flashcard'}🎴
+                  {/if}
+                </div>
+              </div>
+              
+              <!-- 카테고리 배지 -->
+              <div class="absolute top-3 left-3">
+                <div class="badge badge-primary">{getCategoryLabel(template.category)}</div>
+              </div>
+              
+              <!-- 난이도 배지 -->
+              <div class="absolute top-3 right-3">
+                <div class="badge {getDifficultyColor(template.difficulty)}">
+                  {getDifficultyLabel(template.difficulty)}
+                </div>
+              </div>
+            </div>
+            
+            <div class="card-body">
+              <h2 class="card-title">{template.name}</h2>
+              <p class="text-sm text-base-content/70 mb-3">{template.description}</p>
+              
+              <!-- 예상 소요 시간 -->
+              <div class="flex items-center gap-2 text-sm text-base-content/70 mb-3">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                </svg>
+                <span>예상 소요시간: {template.estimatedTime}</span>
+              </div>
+              
+              <!-- 주요 기능 -->
+              <div class="mb-4">
+                <h4 class="font-medium text-sm mb-2">주요 기능</h4>
+                <div class="space-y-1">
+                  {#each template.features.slice(0, 3) as feature}
+                    <div class="flex items-center gap-2 text-xs">
+                      <span class="w-1 h-1 bg-primary rounded-full"></span>
+                      <span>{feature}</span>
+                    </div>
+                  {/each}
+                  {#if template.features.length > 3}
+                    <div class="text-xs text-base-content/70">
+                      +{template.features.length - 3}개 더
+                    </div>
+                  {/if}
+                </div>
+              </div>
+              
+              <!-- 태그 -->
+              <div class="flex flex-wrap gap-1 mb-4">
+                {#each template.tags.slice(0, 3) as tag}
+                  <span class="badge badge-ghost badge-xs">{tag}</span>
+                {/each}
+              </div>
+              
+              <!-- 액션 버튼 -->
+              <div class="card-actions justify-end">
+                <div class="dropdown dropdown-top dropdown-end">
+                  <div tabindex="0" role="button" class="btn btn-ghost btn-sm">
+                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                      <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"></path>
+                    </svg>
+                  </div>
+                  <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-[1] w-52 p-2 shadow">
+                    <li><button on:click={() => previewTemplate(template)}>미리보기</button></li>
+                    <li><button on:click={() => duplicateTemplate(template)}>복제</button></li>
+                    <li><button>즐겨찾기</button></li>
+                  </ul>
+                </div>
+                <button 
+                  class="btn btn-primary btn-sm"
+                  on:click={() => createFromTemplate(template)}
+                >
+                  자료 만들기
+                </button>
+              </div>
+            </div>
+          </div>
+        {:else}
       <!-- 검색 결과 없음 -->
       <div class="col-span-full text-center py-12">
         <div class="text-4xl mb-4">🔍</div>
@@ -267,6 +489,8 @@
         </button>
       </div>
     {/each}
+      </div>
+    </div>
   </div>
 
   <!-- 사용자 정의 템플릿 섹션 -->

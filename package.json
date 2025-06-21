@@ -25,6 +25,7 @@
     "@sveltejs/kit": "^2.21.5",
     "@types/node": "^24.0.3",
     "daisyui": "^5.0.43",
+    "fabric": "^6.7.0",
     "typescript": "^5.8.3"
   }
 }

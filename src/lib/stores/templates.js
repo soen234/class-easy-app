@@ -110,6 +110,76 @@ const defaultTemplates = [
       { type: 'section', content: '종합 평가', editable: true },
       { type: 'text', content: '', editable: true }
     ]
+  },
+  // 새로운 템플릿 카테고리 추가
+  {
+    id: 'concept-basic',
+    name: '기본 개념 설명',
+    description: '개념 설명을 위한 기본 교재 템플릿',
+    category: 'concept',
+    difficulty: 'easy',
+    estimatedTime: '20분',
+    features: ['개념 설명', '예시', '핵심 정리', '연습 문제'],
+    tags: ['교재', '개념', '설명', '기초'],
+    structure: [
+      { type: 'title', content: '학습 주제', editable: true },
+      { type: 'section', content: '학습 목표', editable: true },
+      { type: 'text', content: '', editable: true },
+      { type: 'section', content: '핵심 개념', editable: true },
+      { type: 'text', content: '', editable: true },
+      { type: 'section', content: '예시', editable: true },
+      { type: 'text', content: '', editable: true },
+      { type: 'section', content: '정리', editable: true },
+      { type: 'text', content: '', editable: true }
+    ]
+  },
+  {
+    id: 'presentation-lesson',
+    name: '수업 프레젠테이션',
+    description: '수업용 슬라이드 템플릿',
+    category: 'presentation',
+    difficulty: 'medium',
+    estimatedTime: '30분',
+    features: ['슬라이드 레이아웃', '시각 자료', '핵심 포인트', '상호작용 요소'],
+    tags: ['프레젠테이션', '수업', '슬라이드', '발표'],
+    structure: [
+      { type: 'slide', content: '제목 슬라이드', editable: true },
+      { type: 'slide', content: '학습 목표', editable: true },
+      { type: 'slide', content: '주요 내용 1', editable: true },
+      { type: 'slide', content: '주요 내용 2', editable: true },
+      { type: 'slide', content: '활동/퀴즈', editable: true },
+      { type: 'slide', content: '정리 및 과제', editable: true }
+    ]
+  },
+  {
+    id: 'poster-notice',
+    name: '공지사항 포스터',
+    description: '학교/학원 공지사항용 포스터 템플릿',
+    category: 'poster',
+    difficulty: 'easy',
+    estimatedTime: '15분',
+    features: ['시각적 디자인', '중요 정보 강조', '연락처', '일정'],
+    tags: ['포스터', '공지', '안내', '디자인'],
+    structure: [
+      { type: 'poster-title', content: '공지 제목', editable: true },
+      { type: 'poster-main', content: '주요 내용', editable: true },
+      { type: 'poster-details', content: '세부 사항', editable: true },
+      { type: 'poster-contact', content: '연락처', editable: true }
+    ]
+  },
+  {
+    id: 'flashcard-vocab',
+    name: '어휘 암기 카드',
+    description: '단어 암기용 플래시카드 템플릿',
+    category: 'flashcard',
+    difficulty: 'easy',
+    estimatedTime: '10분',
+    features: ['앞면/뒷면', '이미지 지원', '카테고리 분류', '학습 추적'],
+    tags: ['플래시카드', '암기', '어휘', '단어'],
+    structure: [
+      { type: 'flashcard-set', content: '카드 세트 이름', editable: true },
+      { type: 'flashcard', content: { front: '앞면', back: '뒷면' }, editable: true }
+    ]
   }
 ];
 
@@ -240,7 +310,11 @@ export function getCategoryLabel(category) {
     'worksheet': '학습지',
     'quiz': '퀴즈',
     'homework': '과제',
-    'assessment': '평가'
+    'assessment': '평가',
+    'concept': '교재',
+    'presentation': '프레젠테이션',
+    'poster': '포스터',
+    'flashcard': '플래시카드'
   };
   return labels[category] || category;
 }
