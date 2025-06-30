@@ -10,17 +10,6 @@ export async function initAuth() {
   try {
     loading.set(true);
     
-    if (!supabase) {
-      // Supabase가 설정되지 않은 경우 더미 사용자로 설정
-      user.set({
-        id: 'demo-user',
-        email: 'demo@example.com',
-        user_metadata: { name: '데모 사용자' }
-      });
-      loading.set(false);
-      return;
-    }
-    
     // 현재 세션 확인
     const { data: { session } } = await supabase.auth.getSession();
     user.set(session?.user ?? null);
@@ -40,16 +29,6 @@ export async function initAuth() {
 
 // 로그인
 export async function signIn(email, password) {
-  if (!supabase) {
-    // 개발 중에는 더미 로그인
-    user.set({
-      id: 'demo-user',
-      email: email,
-      user_metadata: { name: '데모 사용자' }
-    });
-    return { data: { user: { email } }, error: null };
-  }
-  
   const { data, error } = await supabase.auth.signInWithPassword({
     email,
     password,
@@ -59,11 +38,6 @@ export async function signIn(email, password) {
 
 // 회원가입
 export async function signUp(email, password) {
-  if (!supabase) {
-    // 개발 중에는 더미 회원가입
-    return { data: { user: { email } }, error: null };
-  }
-  
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
@@ -73,11 +47,6 @@ export async function signUp(email, password) {
 
 // 로그아웃
 export async function signOut() {
-  if (!supabase) {
-    user.set(null);
-    return { error: null };
-  }
-  
   const { error } = await supabase.auth.signOut();
   if (!error) {
     user.set(null);
@@ -87,10 +56,6 @@ export async function signOut() {
 
 // Google 로그인
 export async function signInWithGoogle() {
-  if (!supabase) {
-    return { data: null, error: { message: 'Supabase가 설정되지 않았습니다.' } };
-  }
-  
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
@@ -102,10 +67,6 @@ export async function signInWithGoogle() {
 
 // GitHub 로그인
 export async function signInWithGitHub() {
-  if (!supabase) {
-    return { data: null, error: { message: 'Supabase가 설정되지 않았습니다.' } };
-  }
-  
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'github',
     options: {

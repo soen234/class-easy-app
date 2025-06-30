@@ -2,7 +2,10 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { user } from '$lib/stores/auth.js';
-  import { materials, loading, fetchMaterials, deleteMaterial, formatFileSize, getFileTypeIcon, getFileTypeColor } from '$lib/stores/materials.js';
+  import { materials, loading, fetchMaterials, deleteMaterial, updateMaterial, formatFileSize, getFileTypeIcon, getFileTypeColor } from '$lib/stores/materials.js';
+  import { supabase } from '$lib/supabase.js';
+  import FolderCreateModal from './FolderCreateModal.svelte';
+  import FileUploadModal from './FileUploadModal.svelte';
   
   export let type = 'original';
   
@@ -26,78 +29,57 @@
   let dropTarget = null;
   let showEditModal = false;
   let editingMaterial = null;
+  let showFolderModal = false;
+  let folderParentId = null;
+  let currentFolderId = null;
+  let folders = [];
+  let showUploadModal = false;
+  let showFolderEditModal = false;
+  let editingFolder = null;
 
   // 사용자가 변경되거나 타입이 변경될 때 데이터 재조회
   $: if ($user?.id && type) {
     loadMaterials();
+    loadFolders();
   }
-  $: displayItems = getDisplayItems($materials, type, currentFolder);
+  $: displayItems = getDisplayItems($materials, folders, type, currentFolder);
   $: subjects = getUniqueSubjects($materials, type);
   $: filteredMaterials = getFilteredDisplayItems(displayItems);
 
-  function getDisplayItems(materials, type, currentFolder) {
+  function getDisplayItems(materials, folders, type, currentFolder) {
     const items = [];
-    const folderSet = new Set();
     
-    // 현재 폴더 깊이 계산
-    const currentDepth = currentFolder === '/' ? 0 : currentFolder.split('/').length - 1;
+    // 현재 폴더의 하위 폴더들 추가
+    const currentFolders = folders.filter(folder => {
+      // 현재 폴더가 루트일 때는 parent_id가 null인 폴더들
+      if (currentFolder === '/') {
+        return !folder.parent_id;
+      }
+      // 그 외에는 parent_id가 현재 폴더 ID와 일치하는 폴더들
+      return folder.parent_id === currentFolderId;
+    });
     
-    const filteredMaterials = materials.filter(m => m.type === type);
-    
-    filteredMaterials.forEach(material => {
-        const folderPath = material.folder_path || '/';
-        
-        // 현재 폴더의 직접 파일들 먼저 추가
-        if (folderPath === currentFolder) {
-          const fileItem = {
-            ...material,
-            type: 'file'
-          };
-          items.push(fileItem);
-          return;
-        }
-        
-        // 현재 폴더의 하위 폴더들만 표시
-        if (currentFolder === '/' && folderPath !== '/') {
-          // 루트에서는 첫 번째 레벨 폴더만
-          const pathParts = folderPath.split('/').filter(Boolean);
-          if (pathParts.length > 0) {
-            const nextFolderPath = '/' + pathParts[0];
-            if (!folderSet.has(nextFolderPath)) {
-              folderSet.add(nextFolderPath);
-              items.push({
-                type: 'folder',
-                id: 'folder-' + nextFolderPath,
-                name: pathParts[0],
-                path: nextFolderPath,
-                count: materials.filter(m => 
-                  m.type === type && 
-                  (m.folder_path || '/').startsWith(nextFolderPath)
-                ).length
-              });
-            }
-          }
-        } else if (currentFolder !== '/' && folderPath.startsWith(currentFolder + '/')) {
-          // 현재 폴더의 직접 하위 폴더만
-          const relativePath = folderPath.substring(currentFolder.length + 1);
-          const nextFolderName = relativePath.split('/')[0];
-          const nextFolderPath = currentFolder + '/' + nextFolderName;
-          
-          if (!folderSet.has(nextFolderPath)) {
-            folderSet.add(nextFolderPath);
-            items.push({
-              type: 'folder',
-              id: 'folder-' + nextFolderPath,
-              name: nextFolderName,
-              path: nextFolderPath,
-              count: materials.filter(m => 
-                m.type === type && 
-                (m.folder_path || '/').startsWith(nextFolderPath)
-              ).length
-            });
-          }
-        }
+    currentFolders.forEach(folder => {
+      items.push({
+        ...folder,
+        type: 'folder',
+        path: buildFolderPath(folder, folders),
+        count: countFolderItems(folder.id, materials, folders)
       });
+    });
+    
+    // 현재 폴더의 파일들 추가
+    const filteredMaterials = materials.filter(m => m.type === type);
+    filteredMaterials.forEach(material => {
+      // folder_id로 매칭 (기존 folder_path 대신)
+      if ((currentFolder === '/' && !material.folder_id) || 
+          (currentFolderId && material.folder_id === currentFolderId)) {
+        items.push({
+          ...material,
+          type: 'file'
+        });
+      }
+    });
     
     
     // 폴더를 먼저, 그 다음 파일들을 정렬
@@ -162,15 +144,35 @@
     return Array.from(subjectSet).sort();
   }
 
-  function navigateToFolder(folderPath) {
-    currentFolder = folderPath;
+  function navigateToFolder(folder) {
+    if (folder.type === 'folder') {
+      currentFolder = folder.path;
+      currentFolderId = folder.id;
+    } else if (typeof folder === 'string') {
+      // 루트로 이동하는 경우
+      currentFolder = folder;
+      currentFolderId = null;
+    }
   }
 
   function goUpFolder() {
     if (currentFolder === '/') return;
-    const parts = currentFolder.split('/').filter(Boolean);
-    parts.pop();
-    currentFolder = parts.length > 0 ? '/' + parts.join('/') : '/';
+    
+    // 현재 폴더의 부모 폴더 찾기
+    const currentFolderData = folders.find(f => f.id === currentFolderId);
+    if (currentFolderData && currentFolderData.parent_id) {
+      const parentFolder = folders.find(f => f.id === currentFolderData.parent_id);
+      if (parentFolder) {
+        currentFolder = buildFolderPath(parentFolder, folders);
+        currentFolderId = parentFolder.id;
+      } else {
+        currentFolder = '/';
+        currentFolderId = null;
+      }
+    } else {
+      currentFolder = '/';
+      currentFolderId = null;
+    }
   }
 
   async function loadMaterials() {
@@ -178,13 +180,113 @@
       await fetchMaterials($user.id, type);
     }
   }
+  
+  async function loadFolders() {
+    if (!$user?.id) return;
+    
+    try {
+      const token = localStorage.getItem('sb-access-token') || 
+                    document.cookie.match(/sb-lyjmljtnbodquvwkoizz-auth-token=([^;]+)/)?.[1];
+      
+      const response = await fetch(`/api/folders?type=${type}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        folders = result.data || [];
+        console.log('Loaded folders:', folders.length);
+      } else {
+        console.error('Failed to load folders:', response.status, await response.text());
+      }
+    } catch (error) {
+      console.error('Error loading folders:', error);
+    }
+  }
+  
+  function buildFolderPath(folder, allFolders) {
+    const pathParts = [folder.name];
+    let currentFolder = folder;
+    
+    while (currentFolder.parent_id) {
+      const parent = allFolders.find(f => f.id === currentFolder.parent_id);
+      if (!parent) break;
+      pathParts.unshift(parent.name);
+      currentFolder = parent;
+    }
+    
+    return '/' + pathParts.join('/');
+  }
+  
+  function countFolderItems(folderId, materials, folders) {
+    let count = 0;
+    
+    // 직접 하위 파일 수
+    count += materials.filter(m => m.folder_id === folderId).length;
+    
+    // 하위 폴더들의 아이템 수 (재귀적으로)
+    const subfolders = folders.filter(f => f.parent_id === folderId);
+    subfolders.forEach(subfolder => {
+      count += countFolderItems(subfolder.id, materials, folders);
+    });
+    
+    return count;
+  }
 
   function handleUpload() {
-    goto('/upload');
+    showUploadModal = true;
+  }
+  
+  async function handleFilesUploaded(event) {
+    const { results, successCount } = event.detail;
+    if (successCount > 0) {
+      // 파일이 업로드되면 자료 목록을 다시 불러옴
+      await loadMaterials();
+      
+      // 첫 번째 성공한 파일에 대해 문항 추출 여부 확인
+      const firstSuccess = results.find(r => r.success);
+      if (firstSuccess && firstSuccess.data) {
+        showToast(`"${firstSuccess.data.title}" 업로드 완료!`, 'success');
+        
+        // PDF나 이미지 파일인 경우 문항 추출 페이지로 이동할지 확인
+        const extractableTypes = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+        if (extractableTypes.includes(firstSuccess.data.file_type)) {
+          if (confirm('업로드한 파일에서 문항을 추출하시겠습니까?')) {
+            goto(`/extract?materialId=${firstSuccess.data.id}`);
+          }
+        }
+      }
+    }
+    showUploadModal = false;
   }
 
   function handleCreate() {
     goto('/create-material');
+  }
+  
+  function handleNewFolder() {
+    // 현재 폴더에서 새 폴더 생성
+    folderParentId = currentFolderId;
+    showFolderModal = true;
+  }
+  
+  function handleFolderCreated(event) {
+    const newFolder = event.detail;
+    
+    // 개발 모드에서는 localStorage에 저장
+    if (!supabase) {
+      const savedFolders = localStorage.getItem('folders');
+      const allFolders = savedFolders ? JSON.parse(savedFolders) : [];
+      allFolders.push(newFolder);
+      localStorage.setItem('folders', JSON.stringify(allFolders));
+      folders = allFolders;
+    }
+    
+    // 폴더가 생성되면 폴더 목록을 다시 불러옴
+    loadFolders();
+    showFolderModal = false;
   }
 
   function handleExtract(material) {
@@ -206,16 +308,16 @@
     if (!editingMaterial) return;
     
     if (!editingMaterial.title.trim()) {
-      alert('자료 이름을 입력해주세요.');
+      showToast('자료 이름을 입력해주세요.', 'error');
       return;
     }
     
     if (!editingMaterial.subject) {
-      alert('과목을 선택해주세요.');
+      showToast('과목을 선택해주세요.', 'error');
       return;
     }
     
-    // 폴더 경로 정규화
+    // 폴더 경로 정규화 (folder_id 기반으로 변경)
     if (editingMaterial.folder_path) {
       editingMaterial.folder_path = editingMaterial.folder_path.trim();
       if (!editingMaterial.folder_path.startsWith('/')) {
@@ -228,29 +330,51 @@
     }
     
     try {
-      console.log('Saving material:', editingMaterial);
+      // updateMaterial 함수 사용
+      const updates = {
+        title: editingMaterial.title.trim(),
+        subject: editingMaterial.subject,
+        folder_path: editingMaterial.folder_path || '/'
+      };
       
-      materials.update(items => 
-        items.map(item => 
-          item.id === editingMaterial.id ? { ...editingMaterial, updated_at: new Date().toISOString() } : item
-        )
-      );
+      const { data, error } = await updateMaterial(editingMaterial.id, updates);
       
-      alert('자료가 성공적으로 수정되었습니다.');
-      closeEditModal();
+      if (error) {
+        showToast('저장 중 오류가 발생했습니다.', 'error');
+        console.error('Error saving material:', error);
+      } else {
+        showToast('자료가 성공적으로 수정되었습니다.', 'success');
+        closeEditModal();
+        // 데이터 새로고침
+        loadMaterials();
+      }
     } catch (error) {
       console.error('Error saving material:', error);
-      alert('저장 중 오류가 발생했습니다.');
+      showToast('저장 중 오류가 발생했습니다.', 'error');
     }
   }
 
-  function resetExtractionStatus() {
+  async function resetExtractionStatus() {
     if (!editingMaterial) return;
     
     if (confirm('추출 상태를 초기화하시겠습니까? 추출된 문항 정보가 삭제됩니다.')) {
       editingMaterial.is_extracted = false;
       editingMaterial.extracted_count = 0;
       editingMaterial.extraction_date = null;
+      
+      // 상태 업데이트도 저장
+      const updates = {
+        is_extracted: false,
+        extracted_count: 0,
+        extraction_date: null
+      };
+      
+      const { error } = await updateMaterial(editingMaterial.id, updates);
+      if (error) {
+        showToast('추출 상태 초기화 중 오류가 발생했습니다.', 'error');
+      } else {
+        showToast('추출 상태가 초기화되었습니다.', 'info');
+      }
     }
   }
 
@@ -258,7 +382,10 @@
     if (confirm(`"${material.title}"을(를) 삭제하시겠습니까?`)) {
       const { error } = await deleteMaterial(material.id);
       if (error) {
-        alert('삭제 중 오류가 발생했습니다.');
+        showToast('삭제 중 오류가 발생했습니다.', 'error');
+      } else {
+        showToast(`"${material.title}"이(가) 삭제되었습니다.`, 'success');
+        loadMaterials(); // 삭제 후 목록 새로고침
       }
     }
   }
@@ -314,18 +441,180 @@
     return false;
   }
 
-  function handleFolderDrop(e, folderPath) {
+  async function handleFolderDrop(e, folderId) {
     e.preventDefault();
-    e.currentTarget.style.backgroundColor = '';
+    e.currentTarget.classList.remove('ring-2', 'ring-primary', 'bg-primary/10');
     
-    if (draggedMaterial && draggedMaterial.folder_path !== folderPath) {
-      console.log(`Moving ${draggedMaterial.title} to ${folderPath}`);
-      alert(`"${draggedMaterial.title}"을(를) "${folderPath}" 폴더로 이동했습니다.`);
+    if (draggedMaterial && draggedMaterial.folder_id !== folderId) {
+      try {
+        // 개발 모드에서는 로컬 업데이트
+        if (!supabase) {
+          // materials 업데이트
+          const savedMaterials = localStorage.getItem('materials');
+          const allMaterials = savedMaterials ? JSON.parse(savedMaterials) : [];
+          const updatedMaterials = allMaterials.map(m => 
+            m.id === draggedMaterial.id ? { ...m, folder_id: folderId } : m
+          );
+          localStorage.setItem('materials', JSON.stringify(updatedMaterials));
+          
+          const folder = folders.find(f => f.id === folderId);
+          const folderName = folder ? folder.name : '루트';
+          
+          // 토스트 메시지 표시
+          showToast(`"${draggedMaterial.title}"을(를) "${folderName}" 폴더로 이동했습니다.`, 'success');
+          loadMaterials();
+        } else {
+          const response = await fetch(`/api/materials/${draggedMaterial.id}`, {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${localStorage.getItem('sb-access-token')}`
+            },
+            body: JSON.stringify({ folder_id: folderId })
+          });
+          
+          if (response.ok) {
+            const folder = folders.find(f => f.id === folderId);
+            showToast(`"${draggedMaterial.title}"을(를) "${folder.name}" 폴더로 이동했습니다.`, 'success');
+            loadMaterials();
+          }
+        }
+      } catch (error) {
+        console.error('Error moving material:', error);
+        showToast('자료 이동 중 오류가 발생했습니다.', 'error');
+      }
     }
     
     draggedMaterial = null;
     dropTarget = null;
     return false;
+  }
+  
+  function handleDragEnterFolder(e) {
+    if (draggedMaterial) {
+      e.currentTarget.classList.add('ring-2', 'ring-primary', 'bg-primary/10');
+    }
+  }
+  
+  function handleDragLeaveFolder(e) {
+    e.currentTarget.classList.remove('ring-2', 'ring-primary', 'bg-primary/10');
+  }
+  
+  // 토스트 메시지 표시
+  function showToast(message, type = 'info') {
+    const toast = document.createElement('div');
+    toast.className = `toast toast-top toast-end`;
+    toast.innerHTML = `
+      <div class="alert alert-${type}">
+        <span>${message}</span>
+      </div>
+    `;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+      toast.remove();
+    }, 3000);
+  }
+
+  // 폴더 편집
+  function handleEditFolder(folder) {
+    editingFolder = { ...folder };
+    showFolderEditModal = true;
+  }
+
+  // 폴더 삭제
+  async function handleDeleteFolder(folder) {
+    // 폴더가 비어있는지 확인
+    const hasSubfolders = folders.some(f => f.parent_id === folder.id);
+    const hasMaterials = $materials.some(m => m.folder_id === folder.id);
+    
+    if (hasSubfolders || hasMaterials) {
+      showToast('폴더가 비어있지 않습니다. 먼저 내용을 삭제하거나 이동하세요.', 'error');
+      return;
+    }
+    
+    if (confirm(`"${folder.name}" 폴더를 삭제하시겠습니까?`)) {
+      try {
+        if (!supabase) {
+          // 개발 모드에서는 localStorage에서 삭제
+          const savedFolders = localStorage.getItem('folders') || '[]';
+          const allFolders = JSON.parse(savedFolders);
+          const updatedFolders = allFolders.filter(f => f.id !== folder.id);
+          localStorage.setItem('folders', JSON.stringify(updatedFolders));
+          
+          showToast(`"${folder.name}" 폴더가 삭제되었습니다.`, 'success');
+          loadFolders();
+        } else {
+          const response = await fetch(`/api/folders/${folder.id}`, {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `Bearer ${localStorage.getItem('sb-access-token')}`
+            }
+          });
+          
+          if (response.ok) {
+            showToast(`"${folder.name}" 폴더가 삭제되었습니다.`, 'success');
+            loadFolders();
+          } else {
+            const data = await response.json();
+            showToast(data.error || '폴더 삭제 중 오류가 발생했습니다.', 'error');
+          }
+        }
+      } catch (error) {
+        console.error('Error deleting folder:', error);
+        showToast('폴더 삭제 중 오류가 발생했습니다.', 'error');
+      }
+    }
+  }
+
+  // 폴더 저장
+  async function saveFolderEdit() {
+    if (!editingFolder) return;
+    
+    if (!editingFolder.name || !editingFolder.name.trim()) {
+      showToast('폴더 이름을 입력해주세요.', 'error');
+      return;
+    }
+    
+    try {
+      if (!supabase) {
+        // 개발 모드에서는 localStorage 업데이트
+        const savedFolders = localStorage.getItem('folders') || '[]';
+        const allFolders = JSON.parse(savedFolders);
+        const index = allFolders.findIndex(f => f.id === editingFolder.id);
+        if (index !== -1) {
+          allFolders[index] = { ...allFolders[index], name: editingFolder.name.trim(), color: editingFolder.color };
+          localStorage.setItem('folders', JSON.stringify(allFolders));
+        }
+        
+        showToast(`폴더 이름이 "${editingFolder.name}"(으)로 변경되었습니다.`, 'success');
+        showFolderEditModal = false;
+        editingFolder = null;
+        loadFolders();
+      } else {
+        const response = await fetch(`/api/folders/${editingFolder.id}`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('sb-access-token')}`
+          },
+          body: JSON.stringify({ name: editingFolder.name.trim(), color: editingFolder.color })
+        });
+        
+        if (response.ok) {
+          showToast(`폴더 이름이 "${editingFolder.name}"(으)로 변경되었습니다.`, 'success');
+          showFolderEditModal = false;
+          editingFolder = null;
+          loadFolders();
+        } else {
+          const data = await response.json();
+          showToast(data.error || '폴더 수정 중 오류가 발생했습니다.', 'error');
+        }
+      }
+    } catch (error) {
+      console.error('Error updating folder:', error);
+      showToast('폴더 수정 중 오류가 발생했습니다.', 'error');
+    }
   }
 
   onMount(() => {
@@ -352,7 +641,14 @@
           <span class="text-base-content/50">/</span>
           <button 
             class="btn btn-ghost btn-xs"
-            on:click={() => navigateToFolder('/' + currentFolder.split('/').filter(Boolean).slice(0, index + 1).join('/'))}
+            on:click={() => {
+              const pathParts = currentFolder.split('/').filter(Boolean).slice(0, index + 1);
+              const targetPath = '/' + pathParts.join('/');
+              const targetFolder = folders.find(f => buildFolderPath(f, folders) === targetPath);
+              if (targetFolder) {
+                navigateToFolder(targetFolder);
+              }
+            }}
           >
             📁 {folderName}
           </button>
@@ -391,6 +687,24 @@
       </div>
     </div>
   </div>
+  
+  <!-- 루트 폴더 드롭 영역 (현재 폴더가 루트가 아닐 때만 표시) -->
+  {#if currentFolder !== '/'}
+    <div 
+      class="bg-base-200 rounded-lg p-4 mb-4 border-2 border-dashed border-base-300 transition-all"
+      on:dragover={handleDragOver}
+      on:dragenter={handleDragEnterFolder}
+      on:dragleave={handleDragLeaveFolder}
+      on:drop={(e) => handleFolderDrop(e, null)}
+    >
+      <div class="flex items-center justify-center gap-2 text-base-content/50">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path>
+        </svg>
+        <span>루트 폴더로 이동하려면 여기에 드롭하세요</span>
+      </div>
+    </div>
+  {/if}
   
   <!-- 뷰 컨트롤 -->
   <div class="flex justify-between items-center">
@@ -442,6 +756,13 @@
       </div>
       
       <!-- 액션 버튼 -->
+      <button class="btn btn-secondary" on:click={handleNewFolder}>
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path>
+        </svg>
+        새 폴더
+      </button>
+      
       {#if type === 'original'}
         <button class="btn btn-primary" on:click={handleUpload}>
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -474,13 +795,27 @@
           {#if item.type === 'folder'}
             <!-- 폴더 카드 -->
             <div 
-              class="card bg-base-100 shadow-xl hover:shadow-2xl transition-shadow cursor-pointer"
-              on:click={() => navigateToFolder(item.path)}
+              class="card bg-base-100 shadow-xl hover:shadow-2xl transition-all cursor-pointer group"
+              on:click={() => navigateToFolder(item)}
+              on:dragover={handleDragOver}
+              on:dragenter={handleDragEnterFolder}
+              on:dragleave={handleDragLeaveFolder}
+              on:drop={(e) => handleFolderDrop(e, item.id)}
             >
               <div class="card-body">
                 <div class="flex items-start justify-between mb-2">
-                  <div class="text-4xl text-warning">📁</div>
-                  <div class="badge badge-neutral badge-sm">{item.count}개</div>
+                  <div class="text-4xl" style="color: {item.color || '#gray'}">📁</div>
+                  <div class="dropdown dropdown-end">
+                    <div tabindex="0" role="button" class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity" on:click|stopPropagation>
+                      <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"></path>
+                      </svg>
+                    </div>
+                    <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-[1] w-40 p-2 shadow">
+                      <li><button on:click|stopPropagation={() => handleEditFolder(item)}>이름 변경</button></li>
+                      <li><button on:click|stopPropagation={() => handleDeleteFolder(item)} class="text-error">삭제</button></li>
+                    </ul>
+                  </div>
                 </div>
                 <h2 class="card-title text-sm mb-2">{item.name}</h2>
                 <div class="text-xs text-base-content/70">
@@ -575,21 +910,15 @@
               {#each filteredMaterials as item}
                 {#if item.type === 'folder'}
                   <tr 
-                    class="hover:bg-base-200 cursor-pointer"
-                    on:click={() => navigateToFolder(item.path)}
+                    class="hover:bg-base-200 cursor-pointer transition-all"
+                    on:click={() => navigateToFolder(item)}
                     on:dragover={handleDragOver}
-                    on:dragenter={(e) => {
-                      if (draggedMaterial) {
-                        e.currentTarget.style.backgroundColor = 'rgba(59, 130, 246, 0.1)';
-                      }
-                    }}
-                    on:dragleave={(e) => {
-                      e.currentTarget.style.backgroundColor = '';
-                    }}
-                    on:drop={(e) => handleFolderDrop(e, item.path)}
+                    on:dragenter={handleDragEnterFolder}
+                    on:dragleave={handleDragLeaveFolder}
+                    on:drop={(e) => handleFolderDrop(e, item.id)}
                   >
                     <td>
-                      <div class="text-2xl text-warning">📁</div>
+                      <div class="text-2xl" style="color: {item.color || '#gray'}">📁</div>
                     </td>
                     <td>
                       <div class="font-medium">{item.name}</div>
@@ -603,12 +932,25 @@
                     <td>-</td>
                     <td>-</td>
                     <td class="text-right">
-                      <button 
-                        class="btn btn-ghost btn-xs"
-                        on:click|stopPropagation={() => navigateToFolder(item.path)}
-                      >
-                        열기
-                      </button>
+                      <div class="flex gap-2 justify-end">
+                        <button 
+                          class="btn btn-ghost btn-xs"
+                          on:click|stopPropagation={() => navigateToFolder(item)}
+                        >
+                          열기
+                        </button>
+                        <div class="dropdown dropdown-end">
+                          <div tabindex="0" role="button" class="btn btn-ghost btn-xs" on:click|stopPropagation>
+                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                              <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"></path>
+                            </svg>
+                          </div>
+                          <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-[1] w-40 p-2 shadow">
+                            <li><button on:click|stopPropagation={() => handleEditFolder(item)}>이름 변경</button></li>
+                            <li><button on:click|stopPropagation={() => handleDeleteFolder(item)} class="text-error">삭제</button></li>
+                          </ul>
+                        </div>
+                      </div>
                     </td>
                   </tr>
                 {:else}
@@ -924,3 +1266,74 @@
     }
   }}
 />
+
+<!-- 폴더 생성 모달 -->
+<FolderCreateModal 
+  bind:isOpen={showFolderModal}
+  parentId={folderParentId}
+  currentPath={currentFolder}
+  folderType="materials"
+  on:create={handleFolderCreated}
+  on:close={() => showFolderModal = false}
+/>
+
+<!-- 파일 업로드 모달 -->
+<FileUploadModal
+  bind:isOpen={showUploadModal}
+  currentFolderId={currentFolderId}
+  currentPath={currentFolder}
+  on:upload={handleFilesUploaded}
+  on:close={() => showUploadModal = false}
+/>
+
+<!-- 폴더 편집 모달 -->
+{#if showFolderEditModal && editingFolder}
+  <div class="modal modal-open">
+    <div class="modal-box">
+      <h3 class="font-bold text-lg mb-4">폴더 편집</h3>
+      
+      <div class="space-y-4">
+        <div class="form-control">
+          <label class="label">
+            <span class="label-text">폴더 이름</span>
+          </label>
+          <input 
+            type="text" 
+            class="input input-bordered" 
+            bind:value={editingFolder.name}
+            placeholder="폴더 이름을 입력하세요"
+          />
+        </div>
+        
+        <div class="form-control">
+          <label class="label">
+            <span class="label-text">폴더 색상</span>
+          </label>
+          <div class="flex gap-2">
+            {#each ['#gray', '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'] as color}
+              <button 
+                class="btn btn-circle btn-sm {editingFolder.color === color ? 'ring-2 ring-offset-2' : ''}"
+                style="background-color: {color}"
+                on:click={() => editingFolder.color = color}
+              />
+            {/each}
+          </div>
+        </div>
+      </div>
+      
+      <div class="modal-action">
+        <button class="btn btn-ghost" on:click={() => {showFolderEditModal = false; editingFolder = null;}}>
+          취소
+        </button>
+        <button 
+          class="btn btn-primary" 
+          on:click={saveFolderEdit}
+          disabled={!editingFolder?.name?.trim()}
+        >
+          저장
+        </button>
+      </div>
+    </div>
+    <div class="modal-backdrop" on:click={() => {showFolderEditModal = false; editingFolder = null;}}></div>
+  </div>
+{/if}

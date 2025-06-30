@@ -1,22 +1,32 @@
 import { createClient } from '@supabase/supabase-js'
 import { env } from '$env/dynamic/public'
 
-// 환경 변수가 설정되지 않은 경우 기본값 사용
-const SUPABASE_URL = env.PUBLIC_SUPABASE_URL || ''
-const SUPABASE_ANON_KEY = env.PUBLIC_SUPABASE_ANON_KEY || ''
+// 환경 변수가 설정되지 않은 경우 에러 발생
+const SUPABASE_URL = env.PUBLIC_SUPABASE_URL
+const SUPABASE_ANON_KEY = env.PUBLIC_SUPABASE_ANON_KEY
 
-// 임시로 더미 클라이언트 생성 (실제 Supabase 설정 전까지)
-const isDevelopment = !SUPABASE_URL || SUPABASE_URL === 'your_supabase_project_url' || SUPABASE_URL === ''
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  throw new Error('Supabase 환경 변수가 설정되지 않았습니다. .env 파일을 확인해주세요.')
+}
 
-export const supabase = isDevelopment 
-  ? null  // 개발 중에는 null
-  : createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+// Supabase 클라이언트 생성
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true
+  }
+})
 
-// 인증 관련 헬퍼 함수들
-export async function signUp(email, password) {
+console.log('Supabase connected to:', SUPABASE_URL)
+
+export async function signUp(email, password, metadata = {}) {
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
+    options: {
+      data: metadata
+    }
   })
   return { data, error }
 }
@@ -34,70 +44,46 @@ export async function signOut() {
   return { error }
 }
 
+export async function signInWithGoogle() {
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: {
+      redirectTo: `${window.location.origin}/auth/callback`
+    }
+  })
+  return { data, error }
+}
+
 export async function getCurrentUser() {
   const { data: { user } } = await supabase.auth.getUser()
   return user
 }
 
-// 데이터베이스 헬퍼 함수들
-export async function getMaterials(userId, type = null) {
-  let query = supabase
-    .from('materials')
-    .select('*')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: false })
-  
-  if (type) {
-    query = query.eq('type', type)
-  }
-  
-  const { data, error } = await query
-  return { data, error }
+// 파일 업로드 헬퍼
+export async function uploadFile(bucket, path, file) {
+  const { data, error } = await supabase.storage
+    .from(bucket)
+    .upload(path, file, {
+      cacheControl: '3600',
+      upsert: false
+    });
+
+  return { data, error };
 }
 
-export async function uploadMaterial(file, userId, metadata = {}) {
-  // 파일을 Storage에 업로드
-  const fileExt = file.name.split('.').pop()
-  const fileName = `${Date.now()}.${fileExt}`
-  const filePath = `${userId}/materials/${fileName}`
-  
-  const { data: uploadData, error: uploadError } = await supabase.storage
-    .from('materials')
-    .upload(filePath, file)
-  
-  if (uploadError) {
-    return { data: null, error: uploadError }
-  }
-  
-  // 데이터베이스에 메타데이터 저장
-  const { data, error } = await supabase
-    .from('materials')
-    .insert({
-      user_id: userId,
-      title: file.name,
-      file_path: filePath,
-      file_size: file.size,
-      file_type: file.type,
-      type: metadata.type || 'original',
-      ...metadata
-    })
-    .select()
-    .single()
-  
-  return { data, error }
+// 파일 URL 가져오기
+export function getPublicUrl(bucket, path) {
+  const { data } = supabase.storage
+    .from(bucket)
+    .getPublicUrl(path);
+
+  return data.publicUrl;
 }
 
-export async function getBlocks(userId, materialId = null) {
-  let query = supabase
-    .from('blocks')
-    .select('*')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: false })
-  
-  if (materialId) {
-    query = query.eq('material_id', materialId)
-  }
-  
-  const { data, error } = await query
-  return { data, error }
+// 실시간 구독 헬퍼
+export function subscribe(channel, callback) {
+  return supabase
+    .channel(channel)
+    .on('postgres_changes', { event: '*', schema: 'public' }, callback)
+    .subscribe();
 }

@@ -4,9 +4,29 @@
   import { page } from '$app/stores';
   import { onMount } from 'svelte';
   import { initAuth, user, loading } from '$lib/stores/auth.js';
+  import { cleanupLocalStorage, checkStorageHealth } from '$lib/utils/storageCleanup.js';
+  import { migrateFromLocalStorage } from '$lib/utils/fileStorage.js';
 
-  onMount(() => {
-    initAuth();
+  onMount(async () => {
+    // Supabase 세션 초기화
+    await initAuth();
+    
+    // 스토리지 상태 확인 및 정리
+    try {
+      const health = checkStorageHealth();
+      console.log('Storage health:', health);
+      
+      if (!health.isHealthy) {
+        console.warn('Storage usage is high. Cleaning up...');
+        const cleanupReport = cleanupLocalStorage();
+        console.log('Cleanup report:', cleanupReport);
+      }
+      
+      // localStorage에서 IndexedDB로 마이그레이션
+      await migrateFromLocalStorage();
+    } catch (error) {
+      console.error('Storage maintenance error:', error);
+    }
   });
 </script>
 

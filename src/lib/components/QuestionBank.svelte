@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { user } from '$lib/stores/auth.js';
-  import { blocks, loading, fetchBlocks, deleteBlock, updateBlock, getDifficultyLabel, getBlockTypeLabel, getQuestionSubtypeLabel, getDifficultyBadgeClass, getBlockTypeIcon, getQuestionSubtypeIcon, getAllCustomTags } from '$lib/stores/blocks.js';
+  import { blocks, loading, fetchBlocks, deleteBlock, deleteBlocks, updateBlock, getDifficultyLabel, getBlockTypeLabel, getQuestionSubtypeLabel, getDifficultyBadgeClass, getBlockTypeIcon, getQuestionSubtypeIcon, getAllCustomTags, getAllChapters, collection, addToCollection, removeFromCollection, clearCollection, isInCollection, createThumbnail } from '$lib/stores/blocks.js';
   
   let filteredBlocks = [];
   let searchTerm = '';
@@ -13,12 +13,19 @@
   let filterDifficulties = [];
   let filterSubjects = [];
   let filterCustomTags = [];
+  let filterChapters = [];
   let viewType = 'grid';
   let selectedBlocks = new Set();
   let showCreateFromSelected = false;
   let showEditModal = false;
   let editingBlock = null;
   let availableCustomTags = [];
+  let availableChapters = [];
+  let showImageModal = false;
+  let modalImageData = null;
+  let showCollectionPanel = true;
+  let showDetailModal = false;
+  let detailBlock = null;
   
   // 사용자가 변경될 때 데이터 재조회
   $: if ($user?.id) {
@@ -30,6 +37,9 @@
   
   // 커스텀 태그 목록 업데이트
   $: availableCustomTags = getAllCustomTags($blocks);
+  
+  // 단원 목록 업데이트
+  $: availableChapters = getAllChapters($blocks);
 
   // 검색, 필터, 정렬 적용
   $: {
@@ -44,8 +54,9 @@
       const matchesDifficulty = filterDifficulties.length === 0 || filterDifficulties.includes(block.difficulty);
       const matchesSubject = filterSubjects.length === 0 || (block.tags && block.tags.some(tag => filterSubjects.includes(tag)));
       const matchesCustomTags = filterCustomTags.length === 0 || (block.custom_tags && filterCustomTags.some(tag => block.custom_tags.includes(tag)));
+      const matchesChapter = filterChapters.length === 0 || filterChapters.includes(block.chapter);
       
-      return matchesSearch && matchesType && matchesSubtype && matchesDifficulty && matchesSubject && matchesCustomTags;
+      return matchesSearch && matchesType && matchesSubtype && matchesDifficulty && matchesSubject && matchesCustomTags && matchesChapter;
     });
 
     // 정렬 적용
@@ -119,6 +130,27 @@
     }
   }
   
+  async function handleBulkDelete() {
+    if (selectedBlocks.size === 0) return;
+    
+    if (confirm(`선택한 ${selectedBlocks.size}개의 블록을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.`)) {
+      const blockIds = Array.from(selectedBlocks);
+      
+      // 일괄 삭제 실행
+      const { error } = await deleteBlocks(blockIds);
+      
+      if (error) {
+        alert('블록 삭제 중 오류가 발생했습니다.');
+        console.error('Bulk delete error:', error);
+      } else {
+        alert(`${blockIds.length}개 블록이 성공적으로 삭제되었습니다.`);
+      }
+      
+      // 선택 초기화
+      selectedBlocks = new Set();
+    }
+  }
+  
   async function saveBlock() {
     if (!editingBlock) return;
     
@@ -181,10 +213,48 @@
     else if (filterArray === filterDifficulties) filterDifficulties = [...filterDifficulties];
     else if (filterArray === filterSubjects) filterSubjects = [...filterSubjects];
     else if (filterArray === filterCustomTags) filterCustomTags = [...filterCustomTags];
+    else if (filterArray === filterChapters) filterChapters = [...filterChapters];
   }
 
   function formatDate(dateString) {
     return new Date(dateString).toLocaleDateString('ko-KR');
+  }
+  
+  function showImage(imageData) {
+    modalImageData = imageData;
+    showImageModal = true;
+  }
+  
+  function handleAddToCollection(block) {
+    addToCollection(block);
+  }
+  
+  function handleRemoveFromCollection(blockId) {
+    removeFromCollection(blockId);
+  }
+  
+  function handleCreateFromCollection() {
+    // 컬렉션의 문항들을 localStorage에 저장
+    localStorage.setItem('selectedQuestions', JSON.stringify($collection));
+    goto('/templates?from=collection');
+  }
+  
+  function showDetail(block) {
+    detailBlock = block;
+    showDetailModal = true;
+  }
+  
+  // 썸네일 생성을 위한 변수
+  let thumbnails = {};
+  
+  // 블록이 변경될 때마다 썸네일 생성
+  $: {
+    filteredBlocks.forEach(async (block) => {
+      if (block.image_data && !thumbnails[block.id]) {
+        const thumbnail = await createThumbnail(block.image_data);
+        thumbnails = { ...thumbnails, [block.id]: thumbnail };
+      }
+    });
   }
 
   onMount(() => {
@@ -258,6 +328,12 @@
       
       <!-- 액션 버튼 -->
       {#if showCreateFromSelected}
+        <button class="btn btn-error btn-sm" on:click={handleBulkDelete}>
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+          </svg>
+          선택 삭제 ({selectedBlocks.size}개)
+        </button>
         <button class="btn btn-primary" on:click={handleCreateFromSelected}>
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path>
@@ -289,11 +365,9 @@
             <div class="flex-1 flex flex-wrap gap-2">
               {#each [
                 { value: 'question', label: '문항' },
-                { value: 'passage', label: '지문' },
                 { value: 'concept', label: '개념' },
-                { value: 'formula', label: '공식' },
-                { value: 'example', label: '예제' },
-                { value: 'note', label: '참고' }
+                { value: 'passage', label: '지문' },
+                { value: 'explanation', label: '해설' }
               ] as type}
                 <label class="label cursor-pointer py-1">
                   <input
@@ -370,6 +444,26 @@
               {/each}
             </div>
           </div>
+          
+          <!-- 단원 필터 -->
+          {#if availableChapters.length > 0}
+            <div class="flex items-start gap-4">
+              <div class="w-24 font-medium text-sm pt-2">단원</div>
+              <div class="flex-1 flex flex-wrap gap-2">
+                {#each availableChapters as chapter}
+                  <label class="label cursor-pointer py-1">
+                    <input
+                      type="checkbox"
+                      class="checkbox checkbox-sm mr-2"
+                      checked={filterChapters.includes(chapter)}
+                      on:change={() => toggleFilter(filterChapters, chapter)}
+                    />
+                    <span class="label-text">{chapter}</span>
+                  </label>
+                {/each}
+              </div>
+            </div>
+          {/if}
 
           <!-- 커스텀 태그 필터 -->
           {#if availableCustomTags.length > 0}
@@ -406,19 +500,20 @@
       <!-- 카드 뷰 -->
       <div class="grid gap-4" style="grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));">
         {#each filteredBlocks as block}
-          <div class="card bg-base-100 shadow hover:shadow-lg transition-shadow {selectedBlocks.has(block.id) ? 'ring-2 ring-primary' : ''}" style="max-width: 350px;">
+          <div class="card bg-base-100 shadow hover:shadow-lg transition-shadow cursor-pointer {selectedBlocks.has(block.id) ? 'ring-2 ring-primary' : ''}" style="max-width: 350px;" on:click={() => showDetail(block)}>
             <div class="card-body p-4">
               <div class="flex items-center gap-2 mb-2">
                 <input
                   type="checkbox"
                   class="checkbox checkbox-sm"
                   checked={selectedBlocks.has(block.id)}
+                  on:click|stopPropagation
                   on:change={() => toggleBlockSelection(block.id)}
                 />
                 <div class="text-2xl">{getBlockTypeIcon(block.type)}</div>
                 <div class="flex-1 flex items-center justify-end">
                   <div class="dropdown dropdown-end">
-                    <div tabindex="0" role="button" class="btn btn-ghost btn-xs">
+                    <div tabindex="0" role="button" class="btn btn-ghost btn-xs" on:click|stopPropagation>
                       <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                         <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"></path>
                       </svg>
@@ -443,13 +538,33 @@
                 <div class="badge {getDifficultyBadgeClass(block.difficulty)} badge-xs">
                   {getDifficultyLabel(block.difficulty)}
                 </div>
+                {#if block.score}
+                  <div class="badge badge-info badge-xs">{block.score}점</div>
+                {/if}
               </div>
+              
+              <!-- 이미지 미리보기 -->
+              {#if block.image_data}
+                <div class="mb-2 cursor-pointer" on:click|stopPropagation={() => showImage(block.image_data)}>
+                  <img 
+                    src={thumbnails[block.id] || block.image_data} 
+                    alt="문항 이미지"
+                    class="w-full h-32 object-cover rounded border border-base-300"
+                  />
+                </div>
+              {/if}
               
               <p class="text-sm line-clamp-3 mb-2">{block.content || ''}</p>
               
               {#if block.correct_answer}
                 <p class="text-xs text-base-content/70 truncate">
                   정답: {block.correct_answer}
+                </p>
+              {/if}
+              
+              {#if block.chapter}
+                <p class="text-xs text-base-content/50 truncate">
+                  단원: {block.chapter}
                 </p>
               {/if}
               
@@ -461,6 +576,25 @@
                   {#if block.custom_tags.length > 3}
                     <div class="badge badge-ghost badge-xs">+{block.custom_tags.length - 3}</div>
                   {/if}
+                {/if}
+              </div>
+              
+              <!-- 컬렉션 추가/제거 버튼 -->
+              <div class="card-actions justify-end mt-2">
+                {#if isInCollection(block.id, $collection)}
+                  <button 
+                    class="btn btn-xs btn-error"
+                    on:click|stopPropagation={() => handleRemoveFromCollection(block.id)}
+                  >
+                    컬렉션에서 제거
+                  </button>
+                {:else}
+                  <button 
+                    class="btn btn-xs btn-primary"
+                    on:click|stopPropagation={() => handleAddToCollection(block)}
+                  >
+                    컬렉션에 추가
+                  </button>
                 {/if}
               </div>
             </div>
@@ -482,9 +616,11 @@
                     on:change={toggleAllSelection}
                   />
                 </th>
+                <th class="w-16 min-w-[4rem]">이미지</th>
                 <th class="w-32 min-w-[8rem]">타입</th>
                 <th>내용</th>
                 <th class="w-20 min-w-[5rem]">난이도</th>
+                <th class="w-32 min-w-[8rem]">단원</th>
                 <th class="w-48 min-w-[12rem]">커스텀 태그</th>
                 <th class="w-24 min-w-[6rem]">생성일</th>
                 <th class="w-16 text-right">액션</th>
@@ -500,6 +636,26 @@
                       checked={selectedBlocks.has(block.id)}
                       on:change={() => toggleBlockSelection(block.id)}
                     />
+                  </td>
+                  <td>
+                    {#if block.image_data}
+                      <div 
+                        class="w-12 h-12 cursor-pointer" 
+                        on:click={() => showImage(block.image_data)}
+                      >
+                        <img 
+                          src={thumbnails[block.id] || block.image_data} 
+                          alt="미리보기"
+                          class="w-full h-full object-cover rounded"
+                        />
+                      </div>
+                    {:else}
+                      <div class="w-12 h-12 bg-base-200 rounded flex items-center justify-center">
+                        <svg class="w-6 h-6 text-base-content/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                        </svg>
+                      </div>
+                    {/if}
                   </td>
                   <td class="whitespace-nowrap">
                     <div class="flex items-center gap-2">
@@ -518,11 +674,19 @@
                       {#if block.correct_answer}
                         <p class="text-xs text-base-content/70">정답: {block.correct_answer}</p>
                       {/if}
+                      {#if block.score}
+                        <p class="text-xs text-base-content/50">배점: {block.score}점</p>
+                      {/if}
                     </div>
                   </td>
                   <td>
                     <div class="badge {getDifficultyBadgeClass(block.difficulty)} badge-sm">
                       {getDifficultyLabel(block.difficulty)}
+                    </div>
+                  </td>
+                  <td>
+                    <div class="text-sm truncate">
+                      {block.chapter || '-'}
                     </div>
                   </td>
                   <td>
@@ -544,8 +708,13 @@
                           <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"></path>
                         </svg>
                       </div>
-                      <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-[1] w-32 p-2 shadow">
+                      <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-[1] w-40 p-2 shadow">
                         <li><button on:click={() => handleEdit(block)}>편집</button></li>
+                        {#if isInCollection(block.id, $collection)}
+                          <li><button on:click={() => handleRemoveFromCollection(block.id)}>컬렉션에서 제거</button></li>
+                        {:else}
+                          <li><button on:click={() => handleAddToCollection(block)}>컬렉션에 추가</button></li>
+                        {/if}
                         <li><button on:click={() => handleDelete(block)} class="text-error">삭제</button></li>
                       </ul>
                     </div>
@@ -588,11 +757,9 @@
           </label>
           <select class="select select-bordered" bind:value={editingBlock.type}>
             <option value="question">문항</option>
-            <option value="passage">지문</option>
             <option value="concept">개념</option>
-            <option value="formula">공식</option>
-            <option value="example">예제</option>
-            <option value="note">참고</option>
+            <option value="passage">지문</option>
+            <option value="explanation">해설</option>
           </select>
         </div>
         
@@ -648,7 +815,34 @@
               placeholder="정답을 입력하세요"
             />
           </div>
+          
+          <!-- 배점 -->
+          <div class="form-control">
+            <label class="label">
+              <span class="label-text">배점</span>
+            </label>
+            <input 
+              type="number" 
+              class="input input-bordered" 
+              bind:value={editingBlock.score}
+              placeholder="점수를 입력하세요"
+              min="1"
+            />
+          </div>
         {/if}
+        
+        <!-- 단원 -->
+        <div class="form-control">
+          <label class="label">
+            <span class="label-text">단원</span>
+          </label>
+          <input 
+            type="text" 
+            class="input input-bordered" 
+            bind:value={editingBlock.chapter}
+            placeholder="단원을 입력하세요 (예: 3단원. 이차함수)"
+          />
+        </div>
         
         <!-- 커스텀 태그 -->
         <div class="form-control">
@@ -702,4 +896,248 @@
       <button on:click={() => showEditModal = false}>close</button>
     </form>
   </div>
+{/if}
+
+<!-- 이미지 모달 -->
+{#if showImageModal && modalImageData}
+  <div class="modal modal-open">
+    <div class="modal-box max-w-4xl">
+      <h3 class="font-bold text-lg mb-4">이미지 미리보기</h3>
+      <div class="flex justify-center">
+        <img 
+          src={modalImageData} 
+          alt="블록 이미지"
+          class="max-w-full max-h-[70vh] object-contain"
+        />
+      </div>
+      <div class="modal-action">
+        <button class="btn" on:click={() => showImageModal = false}>닫기</button>
+      </div>
+    </div>
+    <form method="dialog" class="modal-backdrop">
+      <button on:click={() => showImageModal = false}>close</button>
+    </form>
+  </div>
+{/if}
+
+<!-- 상세보기 모달 -->
+{#if showDetailModal && detailBlock}
+  <div class="modal modal-open">
+    <div class="modal-box max-w-4xl">
+      <h3 class="font-bold text-lg mb-4 flex items-center gap-2">
+        <span class="text-2xl">{getBlockTypeIcon(detailBlock.type)}</span>
+        {getBlockTypeLabel(detailBlock.type)} 상세보기
+      </h3>
+      
+      <div class="space-y-4">
+        <!-- 기본 정보 -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <p class="text-sm font-medium mb-1">타입</p>
+            <div class="flex items-center gap-2">
+              <span>{getBlockTypeLabel(detailBlock.type)}</span>
+              {#if detailBlock.subtype}
+                <span class="text-sm text-base-content/70">({getQuestionSubtypeLabel(detailBlock.subtype)})</span>
+              {/if}
+            </div>
+          </div>
+          
+          <div>
+            <p class="text-sm font-medium mb-1">난이도</p>
+            <div class="badge {getDifficultyBadgeClass(detailBlock.difficulty)}">
+              {getDifficultyLabel(detailBlock.difficulty)}
+            </div>
+          </div>
+          
+          {#if detailBlock.score}
+            <div>
+              <p class="text-sm font-medium mb-1">배점</p>
+              <p>{detailBlock.score}점</p>
+            </div>
+          {/if}
+          
+          {#if detailBlock.chapter}
+            <div>
+              <p class="text-sm font-medium mb-1">단원</p>
+              <p>{detailBlock.chapter}</p>
+            </div>
+          {/if}
+          
+          <div>
+            <p class="text-sm font-medium mb-1">생성일</p>
+            <p>{formatDate(detailBlock.created_at)}</p>
+          </div>
+          
+          {#if detailBlock.material_id}
+            <div>
+              <p class="text-sm font-medium mb-1">자료 ID</p>
+              <p class="text-xs font-mono">{detailBlock.material_id}</p>
+            </div>
+          {/if}
+        </div>
+        
+        <!-- 이미지 -->
+        {#if detailBlock.image_data}
+          <div>
+            <p class="text-sm font-medium mb-2">이미지</p>
+            <img 
+              src={detailBlock.image_data} 
+              alt="블록 이미지"
+              class="max-w-full rounded border border-base-300 cursor-pointer"
+              on:click={() => showImage(detailBlock.image_data)}
+            />
+          </div>
+        {/if}
+        
+        <!-- 내용 -->
+        <div>
+          <p class="text-sm font-medium mb-2">내용</p>
+          <div class="bg-base-200 p-4 rounded whitespace-pre-wrap">
+            {detailBlock.content || '(내용 없음)'}
+          </div>
+        </div>
+        
+        <!-- 정답 (문항인 경우) -->
+        {#if detailBlock.type === 'question' && detailBlock.correct_answer}
+          <div>
+            <p class="text-sm font-medium mb-2">정답</p>
+            <div class="bg-primary/10 p-4 rounded">
+              {detailBlock.correct_answer}
+            </div>
+          </div>
+        {/if}
+        
+        <!-- 선택지 (객관식인 경우) -->
+        {#if detailBlock.options && detailBlock.options.length > 0}
+          <div>
+            <p class="text-sm font-medium mb-2">선택지</p>
+            <ol class="list-decimal list-inside space-y-1">
+              {#each detailBlock.options as option, i}
+                <li class="bg-base-200 p-2 rounded">{option}</li>
+              {/each}
+            </ol>
+          </div>
+        {/if}
+        
+        <!-- 태그 -->
+        {#if detailBlock.tags && detailBlock.tags.length > 0}
+          <div>
+            <p class="text-sm font-medium mb-2">태그</p>
+            <div class="flex flex-wrap gap-2">
+              {#each detailBlock.tags as tag}
+                <div class="badge badge-outline">{tag}</div>
+              {/each}
+            </div>
+          </div>
+        {/if}
+        
+        <!-- 커스텀 태그 -->
+        {#if detailBlock.custom_tags && detailBlock.custom_tags.length > 0}
+          <div>
+            <p class="text-sm font-medium mb-2">커스텀 태그</p>
+            <div class="flex flex-wrap gap-2">
+              {#each detailBlock.custom_tags as tag}
+                <div class="badge badge-primary">{tag}</div>
+              {/each}
+            </div>
+          </div>
+        {/if}
+      </div>
+      
+      <div class="modal-action">
+        <button class="btn btn-outline" on:click={() => handleEdit(detailBlock)}>편집</button>
+        <button class="btn" on:click={() => showDetailModal = false}>닫기</button>
+      </div>
+    </div>
+    <form method="dialog" class="modal-backdrop">
+      <button on:click={() => showDetailModal = false}>close</button>
+    </form>
+  </div>
+{/if}
+
+<!-- 컬렉션 패널 -->
+{#if showCollectionPanel}
+  <div class="fixed bottom-0 right-0 w-80 bg-base-100 shadow-2xl border-l border-base-300 z-40">
+    <div class="p-4 border-b">
+      <div class="flex items-center justify-between">
+        <h3 class="font-bold text-lg">컬렉션 ({$collection.length})</h3>
+        <button 
+          class="btn btn-ghost btn-sm btn-circle"
+          on:click={() => showCollectionPanel = false}
+        >
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+          </svg>
+        </button>
+      </div>
+    </div>
+    
+    <div class="p-4 max-h-96 overflow-y-auto">
+      {#if $collection.length === 0}
+        <div class="text-center py-8 text-base-content/50">
+          <p>컬렉션이 비어있습니다</p>
+          <p class="text-sm mt-2">문항을 추가해주세요</p>
+        </div>
+      {:else}
+        <div class="space-y-2">
+          {#each $collection as item}
+            <div class="card bg-base-200 p-3">
+              <div class="flex items-start gap-2">
+                <div class="text-lg">{getBlockTypeIcon(item.type)}</div>
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm font-medium truncate">
+                    {getBlockTypeLabel(item.type)}
+                    {#if item.subtype}
+                      - {getQuestionSubtypeLabel(item.subtype)}
+                    {/if}
+                  </p>
+                  <p class="text-xs text-base-content/70 line-clamp-2">{item.content}</p>
+                </div>
+                <button 
+                  class="btn btn-ghost btn-xs btn-circle"
+                  on:click={() => handleRemoveFromCollection(item.id)}
+                >
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+    
+    {#if $collection.length > 0}
+      <div class="p-4 border-t space-y-2">
+        <button 
+          class="btn btn-primary btn-block"
+          on:click={handleCreateFromCollection}
+        >
+          자료 만들기
+        </button>
+        <button 
+          class="btn btn-outline btn-block"
+          on:click={clearCollection}
+        >
+          컬렉션 비우기
+        </button>
+      </div>
+    {/if}
+  </div>
+{/if}
+
+<!-- 컬렉션 패널 토글 버튼 -->
+{#if !showCollectionPanel}
+  <button 
+    class="fixed bottom-4 right-4 btn btn-circle btn-primary shadow-lg z-40"
+    on:click={() => showCollectionPanel = true}
+  >
+    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z"></path>
+    </svg>
+    {#if $collection.length > 0}
+      <div class="badge badge-sm badge-error absolute -top-1 -right-1">{$collection.length}</div>
+    {/if}
+  </button>
 {/if}

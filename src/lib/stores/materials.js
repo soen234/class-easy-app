@@ -5,7 +5,7 @@ import { supabase } from '$lib/supabase.js';
 export const materials = writable([]);
 export const loading = writable(false);
 
-// 더미 데이터 (Supabase 미설정 시 사용)
+// 더미 데이터 제거 (더 이상 사용하지 않음)
 const dummyMaterials = [
   // 원본 자료 - 루트 폴더
   {
@@ -488,15 +488,6 @@ export async function fetchMaterials(userId, type = null) {
   loading.set(true);
   
   try {
-    if (!supabase) {
-      // 더미 데이터 사용 - 전체 데이터를 스토어에 저장
-      materials.set(dummyMaterials);
-      let filtered = dummyMaterials;
-      if (type) {
-        filtered = dummyMaterials.filter(m => m.type === type);
-      }
-      return { data: filtered, error: null };
-    }
     
     // 실제 Supabase 조회
     let query = supabase
@@ -532,21 +523,6 @@ export async function addMaterial(userId, materialData) {
   loading.set(true);
   
   try {
-    if (!supabase) {
-      // 더미 데이터에 추가
-      const newMaterial = {
-        id: String(Date.now()),
-        user_id: userId,
-        created_at: new Date().toISOString(),
-        ...materialData
-      };
-      
-      const currentMaterials = [...dummyMaterials, newMaterial];
-      dummyMaterials.push(newMaterial);
-      materials.set(currentMaterials);
-      
-      return { data: newMaterial, error: null };
-    }
     
     // 실제 Supabase 추가
     const { data, error } = await supabase
@@ -575,20 +551,47 @@ export async function addMaterial(userId, materialData) {
   }
 }
 
+// 재료 업데이트
+export async function updateMaterial(materialId, updates) {
+  loading.set(true);
+  
+  try {
+    
+    // 실제 Supabase 업데이트
+    const { data, error } = await supabase
+      .from('materials')
+      .update(updates)
+      .eq('id', materialId)
+      .select()
+      .single();
+    
+    if (error) {
+      console.error('Material update error:', error);
+      return { data: null, error };
+    }
+    
+    // 스토어 업데이트
+    materials.update(items => 
+      items.map(item => 
+        item.id === materialId ? data : item
+      )
+    );
+    
+    return { data, error: null };
+    
+  } catch (error) {
+    console.error('Material update error:', error);
+    return { data: null, error };
+  } finally {
+    loading.set(false);
+  }
+}
+
 // 재료 삭제
 export async function deleteMaterial(materialId) {
   loading.set(true);
   
   try {
-    if (!supabase) {
-      // 더미 데이터에서 삭제
-      const index = dummyMaterials.findIndex(m => m.id === materialId);
-      if (index > -1) {
-        dummyMaterials.splice(index, 1);
-      }
-      materials.update(items => items.filter(item => item.id !== materialId));
-      return { error: null };
-    }
     
     // 실제 Supabase 삭제
     const { error } = await supabase

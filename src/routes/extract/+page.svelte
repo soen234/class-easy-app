@@ -2,165 +2,735 @@
   import { onMount } from 'svelte';
   import { browser } from '$app/environment';
   import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
   import { user } from '$lib/stores/auth.js';
-  import { materials, fetchMaterials } from '$lib/stores/materials.js';
+  import { materials, fetchMaterials, updateMaterial, formatFileSize, getFileTypeIcon } from '$lib/stores/materials.js';
   import { addBlock } from '$lib/stores/blocks.js';
+  import { goto } from '$app/navigation';
+  import { getFile, migrateFromLocalStorage } from '$lib/utils/fileStorage.js';
+  import { supabase } from '$lib/supabase.js';
   
-  // State variables
-  let extractionStep = 'select-material';
   let selectedMaterial = null;
-  let selectedBlocks = [];
   let currentPage = 1;
-  let totalPages = 1;
-  let viewScale = 1;
-  let extractionMode = 'manual'; // 'manual' or 'auto'
-  let isSelecting = false;
-  let selectionBox = null;
-  let startPoint = null;
+  let totalPages = 10;
+  let extractionMode = 'manual';
+  let selectedBlocks = [];
   let nextBlockId = 1;
+  let extractionStep = 'select-material';
+  let isExtracting = false;
+  
+  // 파일 관련 변수
+  let fileDataUrl = null;
+  let isLoading = false;
+  let pdfDoc = null;
+  let canvas;
+  let ctx;
+  let overlayCanvas;
+  let overlayCtx;
+  
+  // 영역 선택 관련 변수
+  let isSelecting = false;
+  let selectionStart = null;
+  let selectionRect = null;
+  let canvasContainer;
+  
+  // 줌 관련 변수
+  let zoomLevel = 1;
+  const zoomStep = 0.1;
+  const minZoom = 0.5;
+  const maxZoom = 2;
+  
+  // 렌더링 태스크 관리
+  let renderTask = null;
+  
+  // PDF.js는 브라우저에서만 import
+  let pdfjsLib;
+  if (typeof window !== 'undefined') {
+    import('pdfjs-dist').then(async (module) => {
+      pdfjsLib = module;
+      // Vite에서 PDF.js 워커 설정
+      const workerSrc = await import('pdfjs-dist/build/pdf.worker.min.mjs?url');
+      pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc.default;
+    }).catch(err => {
+      console.error('PDF.js 로드 오류:', err);
+    });
+  }
   
   // 블록 타입
   const blockTypes = [
-    { value: 'question', label: '문항', color: 'primary' },
-    { value: 'passage', label: '지문', color: 'secondary' },
-    { value: 'concept', label: '개념', color: 'info' },
-    { value: 'explanation', label: '해설', color: 'success' }
+    { value: 'question', label: '문제', icon: '❓', color: 'btn-primary' },
+    { value: 'passage', label: '지문', icon: '📜', color: 'btn-secondary' },
+    { value: 'concept', label: '개념', icon: '💡', color: 'btn-accent' },
+    { value: 'explanation', label: '해설', icon: '📝', color: 'btn-info' }
   ];
   
-  // 문제 유형 옵션
-  const questionFormats = [
-    { value: 'multiple_choice', label: '객관식' },
-    { value: 'short_answer', label: '단답형' },
-    { value: 'essay', label: '서술형' },
-    { value: 'true_false', label: 'O/X' }
-  ];
+  // 블록 타입별 카운터
+  let blockCounters = {
+    question: 0,
+    passage: 0,
+    concept: 0,
+    explanation: 0
+  };
   
-  // 추가 정보 입력을 위한 상태
-  let bulkBlockType = '';
-  let bulkQuestionType = '';
+  // 선택된 블록들 (체크박스)
+  let checkedBlocks = new Set();
+  
+  // 전체 선택 체크박스 상태를 위한 reactive 변수
+  $: allChecked = selectedBlocks.length > 0 && checkedBlocks.size === selectedBlocks.length;
+  $: someChecked = checkedBlocks.size > 0 && checkedBlocks.size < selectedBlocks.length;
+  
+  // 키보드 제어를 위한 변수
+  let selectedRowIndex = 0;
+  let isEditingCell = false;
+  
+  // 일괄 작업용 변수
+  let bulkType = '';
+  let bulkFormat = '';
   let bulkScore = '';
   let bulkDifficulty = '';
-  let customTagInput = '';
   
-  // 표 편집을 위한 상태
-  let currentCell = { row: 0, col: 0 };
-  let selectedCells = new Set();
-  let selectionStartCell = null;
-  let isShiftPressed = false;
-  let isCtrlPressed = false;
-  let tableElement = null;
+  // 문항 형식
+  const questionFormats = [
+    { value: 'ox', label: 'O/X' },
+    { value: 'multiple_choice', label: '객관식' },
+    { value: 'single_choice', label: '단일 선택' },
+    { value: 'short_answer', label: '주관식' },
+    { value: 'essay', label: '서술형' }
+  ];
   
-  // Drag and drop
-  let draggedBlockId = null;
-  let dragOverBlockId = null;
+  // 난이도 태그
+  const difficultyTags = [
+    { value: 'low', label: '난이도 낮음', color: 'badge-success' },
+    { value: 'medium', label: '난이도 중간', color: 'badge-warning' },
+    { value: 'high', label: '난이도 높음', color: 'badge-error' }
+  ];
   
-  // Mouse positions
-  let mouseX = 0;
-  let mouseY = 0;
-  
-  // PDF dimensions
-  const pdfPageWidth = 595;
-  const pdfPageHeight = 842;
-  
-  onMount(() => {
+  onMount(async () => {
     if (browser && $user?.id) {
-      fetchMaterials($user.id, 'original').then(() => {
-        // URL 파라미터에서 materialId 확인
-        const materialId = $page.url.searchParams.get('materialId');
-        if (materialId) {
-          // 해당 자료를 찾아서 자동으로 선택
-          const material = $materials.find(m => m.id === materialId);
-          if (material) {
-            selectMaterial(material);
-          }
+      await fetchMaterials($user.id, 'original');
+      
+      // URL 파라미터에서 materialId 확인
+      const materialId = $page.url.searchParams.get('materialId');
+      if (materialId) {
+        const material = $materials.find(m => m.id === materialId);
+        if (material) {
+          selectMaterial(material);
         }
-      });
+      }
+    }
+    
+    // 키보드 이벤트 리스너 추가
+    if (browser) {
+      window.addEventListener('keydown', handleKeyDown);
+      
+      return () => {
+        window.removeEventListener('keydown', handleKeyDown);
+      };
     }
   });
   
-  function selectMaterial(material) {
+  async function selectMaterial(material) {
     selectedMaterial = material;
     extractionStep = 'extract-blocks';
     totalPages = material.pages || 10;
+    
+    // 파일 로드
+    await loadFile();
+  }
+  
+  // 파일 로드 함수
+  async function loadFile() {
+    if (!selectedMaterial) return;
+    
+    try {
+      isLoading = true;
+      
+      // Supabase Storage에서 파일 가져오기
+      if (selectedMaterial.file_path) {
+        const { data } = supabase.storage
+          .from('materials-original')
+          .getPublicUrl(selectedMaterial.file_path);
+        
+        if (data?.publicUrl) {
+          fileDataUrl = data.publicUrl;
+          
+          if (selectedMaterial.mime_type === 'application/pdf') {
+            await loadPDF(fileDataUrl);
+          } else if (selectedMaterial.mime_type?.startsWith('image/')) {
+            totalPages = 1;
+          }
+        }
+      }
+      isLoading = false;
+    } catch (error) {
+      console.error('파일 로드 오류:', error);
+      isLoading = false;
+    }
+  }
+  
+  // PDF 로드 함수
+  async function loadPDF(dataUrl) {
+    try {
+      // PDF.js가 로드될 때까지 대기
+      if (!pdfjsLib) {
+        await new Promise((resolve) => {
+          const checkInterval = setInterval(() => {
+            if (pdfjsLib) {
+              clearInterval(checkInterval);
+              resolve();
+            }
+          }, 100);
+        });
+      }
+      
+      const loadingTask = pdfjsLib.getDocument(dataUrl);
+      pdfDoc = await loadingTask.promise;
+      totalPages = pdfDoc.numPages;
+      selectedMaterial.pages = totalPages;
+      
+      // canvasContainer가 준비될 때까지 대기
+      setTimeout(() => {
+        if (canvasContainer) {
+          renderPage(currentPage);
+        }
+      }, 200);
+    } catch (error) {
+      console.error('PDF 로드 오류:', error);
+    }
+  }
+  
+  // 현재 스케일 저장 (줌 변경 시 블록 좌표 조정용)
+  let currentScale = 1;
+  let baseScale = 1;
+  
+  // PDF 페이지 렌더링
+  async function renderPage(pageNum) {
+    if (!pdfDoc || !canvas || !canvasContainer) return;
+    
+    // 이전 렌더링 태스크 취소
+    if (renderTask) {
+      try {
+        renderTask.cancel();
+      } catch (e) {
+        // 이미 완료된 태스크인 경우 무시
+      }
+    }
+    
+    if (!ctx) {
+      ctx = canvas.getContext('2d');
+    }
+    
+    const page = await pdfDoc.getPage(pageNum);
+    
+    // 컨테이너 너비에 맞춰 초기 스케일 계산
+    const containerWidth = canvasContainer.clientWidth - 40; // 패딩 고려
+    const defaultViewport = page.getViewport({ scale: 1.0 });
+    const fitWidthScale = containerWidth / defaultViewport.width;
+    
+    // 베이스 스케일 저장 (최초 렌더링 시)
+    if (baseScale === 1) {
+      baseScale = fitWidthScale;
+    }
+    
+    // 줌 레벨을 적용한 최종 스케일
+    const scale = fitWidthScale * zoomLevel;
+    currentScale = scale;
+    const viewport = page.getViewport({ scale });
+    
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    
+    // 오버레이 캔버스도 같은 크기로 설정
+    if (overlayCanvas) {
+      overlayCanvas.width = viewport.width;
+      overlayCanvas.height = viewport.height;
+    }
+    
+    const renderContext = {
+      canvasContext: ctx,
+      viewport: viewport
+    };
+    
+    renderTask = page.render(renderContext);
+    await renderTask.promise;
+    
+    // 기존 블록 영역 표시 (약간의 지연 후)
+    setTimeout(() => {
+      drawExistingBlocks();
+    }, 100);
   }
   
   function handlePageChange(page) {
     currentPage = page;
+    if (pdfDoc) {
+      renderPage(currentPage).then(() => {
+        drawExistingBlocks();
+      });
+    }
+  }
+  
+  function handleZoomIn() {
+    if (zoomLevel < maxZoom) {
+      zoomLevel = Math.min(zoomLevel + zoomStep, maxZoom);
+      renderPage(currentPage);
+    }
+  }
+  
+  function handleZoomOut() {
+    if (zoomLevel > minZoom) {
+      zoomLevel = Math.max(zoomLevel - zoomStep, minZoom);
+      renderPage(currentPage);
+    }
+  }
+  
+  function handleZoomReset() {
+    zoomLevel = 1;
+    renderPage(currentPage);
   }
   
   function setExtractionMode(mode) {
     extractionMode = mode;
   }
   
-  function autoExtractBlocks() {
-    // AI 자동 추출 시뮬레이션 - 현재 페이지의 문제 영역을 자동으로 감지
-    const autoBlocks = [];
+  async function autoExtractBlocks() {
+    isExtracting = true;
     
-    if (currentPage === 1) {
-      autoBlocks.push(
-        {
-          id: `block-auto-${nextBlockId}`,
-          type: 'question',
-          title: `문항 ${selectedBlocks.filter(b => b.type === 'question').length + 1}`,
-          page: currentPage,
-          selection: { x: 65, y: 335, width: 480, height: 85 },
-          content: '다음 중 이차함수 f(x) = ax² + bx + c의 그래프가 아래로 볼록한 조건은?',
-          format: 'multiple_choice',
-          answer: '① a &gt; 0',
-          score: 3,
-          difficulty: 'medium',
-          explanationUrl: '',
-          tags: ['이차함수'],
-          customTags: [],
-          linkedQuestions: [],
-          extractedText: '다음 중 이차함수 f(x) = ax² + bx + c의 그래프가 아래로 볼록한 조건은? ① a &gt; 0 ② a &lt; 0 ③ a = 0 ④ b &gt; 0 ⑤ c &gt; 0',
-          selected: false
-        },
-        {
-          id: `block-auto-${nextBlockId + 1}`,
-          type: 'question',
-          title: `문항 ${selectedBlocks.filter(b => b.type === 'question').length + 2}`,
-          page: currentPage,
-          selection: { x: 65, y: 435, width: 480, height: 65 },
-          content: '함수 f(x) = x² - 4x + 3의 최솟값을 구하시오.',
-          format: 'short_answer',
-          answer: '-1',
-          score: 4,
-          difficulty: 'medium',
-          explanationUrl: '',
-          tags: ['최솟값'],
-          customTags: [],
-          linkedQuestions: [],
-          extractedText: '함수 f(x) = x² - 4x + 3의 최솟값을 구하시오.',
-          selected: false
-        }
-      );
-    } else if (currentPage === 2) {
-      autoBlocks.push(
-        {
-          id: `block-auto-${nextBlockId}`,
-          type: 'question',
-          title: `문항 ${selectedBlocks.filter(b => b.type === 'question').length + 1}`,
-          page: currentPage,
-          selection: { x: 65, y: 390, width: 480, height: 120 },
-          content: '이차함수 f(x) = x² - 2x + k가 x축과 서로 다른 두 점에서 만날 조건을 구하고, 그 이유를 설명하시오.',
-          format: 'essay',
-          answer: 'k &lt; 1 (판별식 D &gt; 0 조건)',
-          score: 10,
-          difficulty: 'hard',
-          explanationUrl: '',
-          tags: ['판별식'],
-          customTags: [],
-          linkedQuestions: [],
-          extractedText: '이차함수 f(x) = x² - 2x + k가 x축과 서로 다른 두 점에서 만날 조건을 구하고, 그 이유를 설명하시오. (10점)',
-          selected: false
-        }
-      );
-    }
+    // 시뮬레이션을 위한 가짜 지연
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    const autoBlocks = [
+      {
+        id: `block-auto-1`,
+        type: 'question',
+        title: `문제 1`,
+        page: currentPage,
+        selection: { x: 50, y: 100, width: 400, height: 80 },
+        content: '다음 중 이차함수의 그래프가 아래로 볼록한 조건은?',
+        format: 'multiple_choice',
+        answer: '',
+        tags: [],
+        linkedBlocks: [],
+        extractedText: '다음 중 이차함수의 그래프가 아래로 볼록한 조건은?',
+        imageData: null
+      },
+      {
+        id: `block-auto-2`,
+        type: 'question',
+        title: `문제 2`,
+        page: currentPage,
+        selection: { x: 50, y: 200, width: 350, height: 60 },
+        content: 'f(x) = x² - 4x + 3의 최솟값을 구하시오.',
+        format: 'short_answer',
+        answer: '',
+        tags: [],
+        linkedBlocks: [],
+        extractedText: 'f(x) = x² - 4x + 3의 최솟값을 구하시오.',
+        imageData: null
+      }
+    ];
     
     selectedBlocks = [...selectedBlocks, ...autoBlocks];
     nextBlockId += autoBlocks.length;
+    isExtracting = false;
+    
+    // 자동 추출 후 블록 그리기
+    setTimeout(() => {
+      drawExistingBlocks();
+    }, 100);
+  }
+  
+  // 영역 선택 모드 토글
+  function toggleSelection() {
+    isSelecting = !isSelecting;
+  }
+  
+  // 마우스 이벤트 핸들러
+  function handleMouseDown(e) {
+    if (extractionMode !== 'manual' || !canvas) return;
+    
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    
+    selectionStart = {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY
+    };
+    
+    selectionRect = {
+      x: selectionStart.x,
+      y: selectionStart.y,
+      width: 0,
+      height: 0
+    };
+  }
+  
+  function handleMouseMove(e) {
+    if (extractionMode !== 'manual' || !selectionStart || !canvas) return;
+    
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    
+    const currentX = (e.clientX - rect.left) * scaleX;
+    const currentY = (e.clientY - rect.top) * scaleY;
+    
+    selectionRect = {
+      x: Math.min(selectionStart.x, currentX),
+      y: Math.min(selectionStart.y, currentY),
+      width: Math.abs(currentX - selectionStart.x),
+      height: Math.abs(currentY - selectionStart.y)
+    };
+    
+    // 오버레이 캔버스에만 선택 영역 그리기
+    drawSelectionOverlay();
+  }
+  
+  function handleMouseUp(e) {
+    if (extractionMode !== 'manual' || !selectionStart || !selectionRect) return;
+    
+    if (selectionRect.width > 10 && selectionRect.height > 10) {
+      // 영역이 충분히 큰 경우에만 블록 생성
+      createBlockFromSelection();
+    }
+    
+    // 선택 모드 종료
+    isSelecting = false;
+    selectionStart = null;
+    selectionRect = null;
+    clearSelectionOverlay();
+  }
+  
+  function createBlockFromSelection() {
+    if (!selectionRect || !canvas) return;
+    
+    // 선택된 영역의 이미지 캡처
+    const imageData = captureCanvasArea(selectionRect);
+    
+    // 기본 타입은 문제
+    const defaultType = 'question';
+    blockCounters[defaultType]++;
+    
+    const typeInfo = blockTypes.find(t => t.value === defaultType);
+    const title = `${typeInfo.label} ${blockCounters[defaultType]}`;
+    
+    // 현재 스케일 비율을 반영하여 블록 좌표를 베이스 스케일로 정규화
+    const scaleRatio = currentScale / baseScale;
+    const normalizedSelection = {
+      x: selectionRect.x / scaleRatio,
+      y: selectionRect.y / scaleRatio,
+      width: selectionRect.width / scaleRatio,
+      height: selectionRect.height / scaleRatio
+    };
+    
+    const newBlock = {
+      id: `block-${nextBlockId}`,
+      type: defaultType,
+      title: title,
+      page: currentPage,
+      selection: normalizedSelection, // 정규화된 좌표 저장
+      content: '',
+      format: 'multiple_choice',
+      answer: '',
+      tags: [], // 빈 배열로 초기화
+      linkedBlocks: [],
+      extractedText: '',
+      imageData: imageData, // 캡처된 이미지 저장
+      score: 3, // 기본 배점
+      difficulty: '', // 난이도
+      customTags: [] // 커스텀 태그
+    };
+    
+    selectedBlocks = [...selectedBlocks, newBlock];
+    nextBlockId++;
+    
+    // 블록 영역 표시 (약간의 지연 후)
+    setTimeout(() => {
+      drawExistingBlocks();
+    }, 50);
+  }
+  
+  // 블록 타입 변경 시 제목 업데이트
+  function updateBlockType(blockId, newType) {
+    selectedBlocks = selectedBlocks.map(block => {
+      if (block.id === blockId) {
+        return { ...block, type: newType };
+      }
+      return block;
+    });
+    
+    // 모든 블록의 번호를 재계산
+    recalculateBlockNumbers();
+    
+    // 블록 영역 다시 표시
+    drawExistingBlocks();
+  }
+  
+  // 블록 번호 재계산 함수
+  function recalculateBlockNumbers() {
+    // 각 타입별 카운터 초기화
+    const tempCounters = {
+      question: 0,
+      passage: 0,
+      concept: 0,
+      explanation: 0
+    };
+    
+    // 모든 블록을 순회하며 번호 재할당
+    selectedBlocks.forEach(block => {
+      tempCounters[block.type]++;
+      const typeInfo = blockTypes.find(t => t.value === block.type);
+      block.title = `${typeInfo.label} ${tempCounters[block.type]}`;
+    });
+    
+    // 전역 카운터 업데이트
+    blockCounters = tempCounters;
+  }
+  
+  function captureCanvasArea(rect) {
+    if (!canvas || !ctx) return null;
+    
+    // 임시 캔버스 생성
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = rect.width;
+    tempCanvas.height = rect.height;
+    const tempCtx = tempCanvas.getContext('2d');
+    
+    // 선택 영역 복사
+    tempCtx.drawImage(
+      canvas,
+      rect.x, rect.y, rect.width, rect.height,
+      0, 0, rect.width, rect.height
+    );
+    
+    // base64로 변환
+    return tempCanvas.toDataURL('image/png');
+  }
+  
+  function drawSelectionOverlay() {
+    if (!overlayCtx || !overlayCanvas) return;
+    
+    // 오버레이 캔버스 클리어
+    overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    
+    // 선택 영역 그리기
+    if (selectionRect && selectionStart) {
+      overlayCtx.save();
+      overlayCtx.strokeStyle = '#3B82F6';
+      overlayCtx.lineWidth = 2;
+      overlayCtx.setLineDash([5, 5]);
+      overlayCtx.strokeRect(
+        selectionRect.x,
+        selectionRect.y,
+        selectionRect.width,
+        selectionRect.height
+      );
+      overlayCtx.restore();
+    }
+  }
+  
+  function clearSelectionOverlay() {
+    if (!overlayCtx || !overlayCanvas) return;
+    overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+  }
+  
+  function drawSelectionRect() {
+    if (!ctx || !selectionRect) return;
+    
+    ctx.save();
+    ctx.strokeStyle = '#3B82F6';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 5]);
+    ctx.strokeRect(
+      selectionRect.x,
+      selectionRect.y,
+      selectionRect.width,
+      selectionRect.height
+    );
+    ctx.restore();
+  }
+  
+  function drawExistingBlocks() {
+    if (!overlayCtx || !overlayCanvas) return;
+    
+    // 오버레이 캔버스 클리어
+    overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    
+    // 스케일 비율 계산 (현재 스케일 / 블록 생성 시 스케일)
+    const scaleRatio = currentScale / baseScale;
+    
+    // 선택된 블록들 그리기
+    selectedBlocks.forEach(block => {
+      if (block.page === currentPage && block.selection) {
+        overlayCtx.save();
+        
+        // 블록 타입에 따른 색상 설정
+        const colors = {
+          question: '#3B82F6',    // 파란색
+          passage: '#8B5CF6',     // 보라색
+          concept: '#F59E0B',     // 주황색
+          explanation: '#10B981'  // 초록색
+        };
+        
+        const color = colors[block.type] || '#3B82F6';
+        
+        // 스케일된 좌표 계산
+        const scaledX = block.selection.x * scaleRatio;
+        const scaledY = block.selection.y * scaleRatio;
+        const scaledWidth = block.selection.width * scaleRatio;
+        const scaledHeight = block.selection.height * scaleRatio;
+        
+        // 체크된 블록은 더 진하게 표시
+        if (checkedBlocks.has(block.id)) {
+          overlayCtx.fillStyle = color + '30'; // 반투명 배경
+          overlayCtx.fillRect(scaledX, scaledY, scaledWidth, scaledHeight);
+        }
+        
+        overlayCtx.strokeStyle = color;
+        overlayCtx.lineWidth = checkedBlocks.has(block.id) ? 3 : 2;
+        overlayCtx.strokeRect(scaledX, scaledY, scaledWidth, scaledHeight);
+        
+        // 블록 번호 표시
+        overlayCtx.fillStyle = color;
+        overlayCtx.fillRect(scaledX, scaledY - 25, 100, 25);
+        overlayCtx.fillStyle = 'white';
+        overlayCtx.font = 'bold 12px sans-serif';
+        overlayCtx.fillText(block.title, scaledX + 5, scaledY - 8);
+        overlayCtx.restore();
+      }
+    });
+    
+    // 현재 선택 중인 영역도 표시
+    if (selectionRect && selectionStart) {
+      drawSelectionRect();
+    }
+  }
+  
+  function removeBlock(blockId) {
+    selectedBlocks = selectedBlocks.filter(block => block.id !== blockId);
+    if (checkedBlocks.has(blockId)) {
+      checkedBlocks.delete(blockId);
+      checkedBlocks = new Set(checkedBlocks); // 반응성 트리거
+    }
+    
+    // 블록 삭제 후 번호 재계산
+    recalculateBlockNumbers();
+    
+    drawExistingBlocks();
+  }
+  
+  // 체크박스 상태 변경
+  function toggleBlockCheck(blockId) {
+    if (checkedBlocks.has(blockId)) {
+      checkedBlocks.delete(blockId);
+    } else {
+      checkedBlocks.add(blockId);
+    }
+    checkedBlocks = new Set(checkedBlocks); // 새로운 Set으로 할당하여 Svelte 반응성 트리거
+    drawExistingBlocks();
+  }
+  
+  // 전체 선택/해제
+  function toggleAllBlocks() {
+    if (checkedBlocks.size === selectedBlocks.length && selectedBlocks.length > 0) {
+      checkedBlocks.clear();
+    } else {
+      checkedBlocks = new Set(selectedBlocks.map(b => b.id));
+    }
+    checkedBlocks = checkedBlocks; // Svelte 반응성 트리거
+    drawExistingBlocks();
+  }
+  
+  
+  // 블록 연결 토글
+  function toggleLinkBlock(block, questionId) {
+    if (!block.linkedBlocks) {
+      block.linkedBlocks = [];
+    }
+    
+    const index = block.linkedBlocks.indexOf(questionId);
+    if (index > -1) {
+      block.linkedBlocks.splice(index, 1);
+    } else {
+      block.linkedBlocks.push(questionId);
+    }
+    
+    // 반응성 트리거
+    selectedBlocks = [...selectedBlocks];
+  }
+
+  // 드래그 상태
+  let draggedBlock = null;
+  let dropTargetBlock = null;
+
+  function handleDragStart(event, block) {
+    draggedBlock = block;
+    event.dataTransfer.effectAllowed = 'link';
+    event.dataTransfer.setData('text/plain', block.id);
+  }
+
+  function handleDragEnd(event) {
+    draggedBlock = null;
+    dropTargetBlock = null;
+    // 모든 드래그 관련 클래스 제거
+    document.querySelectorAll('.drag-over').forEach(el => {
+      el.classList.remove('drag-over');
+    });
+  }
+
+  function handleDragOver(event, block) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'link';
+    
+    // 연결 가능한 조합인지 확인
+    if (canConnect(draggedBlock, block)) {
+      dropTargetBlock = block;
+      event.currentTarget.classList.add('drag-over');
+    }
+  }
+
+  function handleDragLeave(event) {
+    event.currentTarget.classList.remove('drag-over');
+  }
+
+  function handleDrop(event, targetBlock) {
+    event.preventDefault();
+    event.currentTarget.classList.remove('drag-over');
+    
+    if (draggedBlock && targetBlock && canConnect(draggedBlock, targetBlock)) {
+      // 지문/해설을 문제에 드롭한 경우
+      if ((draggedBlock.type === 'passage' || draggedBlock.type === 'explanation') && targetBlock.type === 'question') {
+        toggleLinkBlock(draggedBlock, targetBlock.id);
+      }
+      // 문제를 지문/해설에 드롭한 경우
+      else if (draggedBlock.type === 'question' && (targetBlock.type === 'passage' || targetBlock.type === 'explanation')) {
+        toggleLinkBlock(targetBlock, draggedBlock.id);
+      }
+    }
+  }
+
+  function canConnect(source, target) {
+    if (!source || !target || source.id === target.id) return false;
+    
+    // 지문/해설 -> 문제 또는 문제 -> 지문/해설만 가능
+    return (
+      ((source.type === 'passage' || source.type === 'explanation') && target.type === 'question') ||
+      (source.type === 'question' && (target.type === 'passage' || target.type === 'explanation'))
+    );
+  }
+
+  // 선택된 블록들 일괄 삭제
+  function batchDeleteBlocks() {
+    if (checkedBlocks.size === 0) return;
+    
+    if (confirm(`선택된 ${checkedBlocks.size}개의 블록을 삭제하시겠습니까?`)) {
+      selectedBlocks = selectedBlocks.filter(block => !checkedBlocks.has(block.id));
+      checkedBlocks.clear();
+      
+      // 블록 삭제 후 번호 재계산
+      recalculateBlockNumbers();
+      
+      drawExistingBlocks();
+    }
   }
   
   function proceedToConfiguration() {
@@ -180,423 +750,322 @@
   }
   
   async function finalizeExtraction() {
-    for (const block of selectedBlocks) {
-      const blockData = {
-        material_id: selectedMaterial.id,
-        type: block.type,
-        subtype: block.format,
-        content: block.extractedText,
-        correct_answer: block.answer || '',
-        difficulty: block.difficulty || 'medium',
-        page_number: block.page,
-        tags: block.tags || [],
-        custom_tags: block.customTags || [],
-        linked_questions: block.linkedQuestions || []
+    try {
+      if (!supabase || localStorage.getItem('demo-mode') === 'true') {
+        // 데모 모드 또는 개발 모드: localStorage에 저장
+        const savedBlocks = localStorage.getItem('local-blocks') || '[]';
+        const allBlocks = JSON.parse(savedBlocks);
+        
+        selectedBlocks.forEach(block => {
+          allBlocks.push({
+            ...block,
+            material_id: selectedMaterial.id,
+            material_title: selectedMaterial.title,
+            created_at: new Date().toISOString(),
+            // 필드 매핑
+            subtype: block.format,
+            correct_answer: block.answer,
+            custom_tags: block.customTags || [],
+            linked_blocks: block.linkedBlocks || [],
+            image_data: block.imageData,
+            page_number: block.page,
+            chapter: block.chapter || ''
+          });
+        });
+        
+        localStorage.setItem('local-blocks', JSON.stringify(allBlocks));
+      } else {
+        // Supabase에 저장 - blocks 테이블 사용
+        const blocksToInsert = selectedBlocks.map(block => ({
+          user_id: $user.id,
+          material_id: selectedMaterial.id,
+          title: block.title || `${block.type} ${block.id}`, // title 필드 추가
+          type: block.type,
+          subtype: block.format, // format → subtype
+          content: block.extractedText || block.content || '',
+          correct_answer: block.answer || '', // answer → correct_answer
+          difficulty: block.difficulty || 'medium',
+          tags: block.tags || [],
+          custom_tags: block.customTags || [], // customTags → custom_tags
+          page_number: block.page,
+          score: block.score || 0,
+          linked_blocks: block.linkedBlocks || [],
+          image_data: block.imageData || null,
+          chapter: block.chapter || '',
+          options: block.options || null
+        }));
+        
+        console.log('Inserting blocks:', blocksToInsert);
+        
+        const { data, error } = await supabase
+          .from('blocks')
+          .insert(blocksToInsert)
+          .select();
+        
+        if (error) {
+          console.error('Blocks insert error:', error);
+          alert(`문항 저장 중 오류가 발생했습니다: ${error.message}`);
+          return;
+        }
+        
+        console.log('Blocks inserted successfully:', data);
+      }
+      
+      // materials store 업데이트
+      const questionCount = selectedBlocks.filter(b => b.type === 'question').length;
+      const updates = {
+        is_extracted: true,
+        extracted_count: questionCount,
+        extraction_date: new Date().toISOString()
       };
       
-      try {
-        await addBlock($user.id, blockData);
-      } catch (error) {
-        console.error('Error adding block:', error);
+      await updateMaterial(selectedMaterial.id, updates);
+      
+      alert(`${selectedBlocks.length}개의 블록이 추출되었습니다!`);
+      
+      if (confirm('문제 은행 페이지로 이동하시겠습니까?')) {
+        goto('/question-bank');
+      } else {
+        goto('/my-materials');
       }
+    } catch (error) {
+      console.error('추출 완료 중 오류:', error);
+      alert('추출 완료 중 오류가 발생했습니다.');
     }
-    
-    alert(`${selectedBlocks.length}개의 블록이 추출되었습니다!`);
-    goto('/my-materials');
   }
   
   function getBlockTypeInfo(type) {
     return blockTypes.find(t => t.value === type) || blockTypes[0];
   }
   
-  // Manual extraction functions
-  function startSelection(event) {
-    if (extractionMode !== 'manual') return;
+  // 일괄 작업 함수들
+  function applyBulkType() {
+    if (!bulkType || checkedBlocks.size === 0) return;
     
-    const rect = event.currentTarget.getBoundingClientRect();
-    isSelecting = true;
-    startPoint = {
-      x: event.clientX - rect.left,
-      y: event.clientY - rect.top
-    };
-    selectionBox = {
-      x: startPoint.x,
-      y: startPoint.y,
-      width: 0,
-      height: 0
-    };
-  }
-  
-  function updateSelection(event) {
-    if (!isSelecting || !startPoint) return;
-    
-    const rect = event.currentTarget.getBoundingClientRect();
-    const currentX = event.clientX - rect.left;
-    const currentY = event.clientY - rect.top;
-    
-    selectionBox = {
-      x: Math.min(startPoint.x, currentX),
-      y: Math.min(startPoint.y, currentY),
-      width: Math.abs(currentX - startPoint.x),
-      height: Math.abs(currentY - startPoint.y)
-    };
-    
-    mouseX = currentX;
-    mouseY = currentY;
-  }
-  
-  function endSelection(event) {
-    if (!isSelecting || !selectionBox || selectionBox.width < 10 || selectionBox.height < 10) {
-      isSelecting = false;
-      selectionBox = null;
-      return;
-    }
-    
-    // 새 블록 추가
-    const newBlock = {
-      id: `block-${nextBlockId++}`,
-      type: 'question',
-      title: `문항 ${selectedBlocks.filter(b => b.type === 'question').length + 1}`,
-      page: currentPage,
-      selection: { ...selectionBox },
-      content: '',
-      format: '',
-      answer: '',
-      score: '',
-      difficulty: '',
-      explanationUrl: '',
-      tags: [],
-      customTags: [],
-      linkedQuestions: [],
-      extractedText: '추출된 텍스트가 여기에 표시됩니다...',
-      selected: false
-    };
-    
-    selectedBlocks = [...selectedBlocks, newBlock];
-    isSelecting = false;
-    selectionBox = null;
-  }
-  
-  function removeBlock(blockId) {
-    selectedBlocks = selectedBlocks.filter(block => block.id !== blockId);
-  }
-  
-  // 블록 병합 함수
-  function mergeSelectedBlocks() {
-    const selected = selectedBlocks.filter(b => b.selected);
-    if (selected.length < 2) return;
-    
-    // 병합된 블록 생성
-    const mergedBlock = {
-      id: `block-merged-${nextBlockId++}`,
-      type: selected[0].type,
-      title: `병합된 블록 (${selected.map(b => b.title).join(' + ')})`,
-      page: selected[0].page,
-      selection: {
-        x: Math.min(...selected.map(b => b.selection.x)),
-        y: Math.min(...selected.map(b => b.selection.y)),
-        width: Math.max(...selected.map(b => b.selection.x + b.selection.width)) - Math.min(...selected.map(b => b.selection.x)),
-        height: Math.max(...selected.map(b => b.selection.y + b.selection.height)) - Math.min(...selected.map(b => b.selection.y))
-      },
-      content: selected.map(b => b.content).join('\n'),
-      format: selected[0].format,
-      answer: selected[0].answer,
-      score: selected.reduce((sum, b) => sum + (parseInt(b.score) || 0), 0).toString(),
-      difficulty: selected[0].difficulty,
-      explanationUrl: selected[0].explanationUrl,
-      tags: [...new Set(selected.flatMap(b => b.tags))],
-      customTags: [...new Set(selected.flatMap(b => b.customTags))],
-      linkedQuestions: [...new Set(selected.flatMap(b => b.linkedQuestions))],
-      extractedText: selected.map(b => b.extractedText).join('\n'),
-      selected: false,
-      isMerged: true,
-      originalBlocks: selected.map(b => b.id)
-    };
-    
-    // 선택된 블록 제거하고 병합된 블록 추가
-    selectedBlocks = selectedBlocks.filter(b => !b.selected);
-    selectedBlocks = [...selectedBlocks, mergedBlock];
-  }
-  
-  // 블록 분리 함수
-  function splitSelectedBlocks() {
-    const selected = selectedBlocks.filter(b => b.selected && b.isMerged);
-    if (selected.length === 0) return;
-    
-    // 분리된 블록들을 원래대로 복원
-    const restoredBlocks = [];
-    selected.forEach(mergedBlock => {
-      // 간단한 분리 로직 - 실제로는 원본 정보를 저장해둬야 함
-      const parts = mergedBlock.title.match(/\((.*?)\)$/)?.[1]?.split(' + ') || [];
-      parts.forEach((partTitle, index) => {
-        restoredBlocks.push({
-          id: `block-split-${nextBlockId++}`,
-          type: mergedBlock.type,
-          title: partTitle || `분리된 블록 ${index + 1}`,
-          page: mergedBlock.page,
-          selection: {
-            x: mergedBlock.selection.x,
-            y: mergedBlock.selection.y + (index * 50),
-            width: mergedBlock.selection.width,
-            height: 50
-          },
-          content: '',
-          format: mergedBlock.format,
-          answer: '',
-          score: '',
-          difficulty: mergedBlock.difficulty,
-          explanationUrl: '',
-          tags: mergedBlock.tags,
-          customTags: mergedBlock.customTags,
-          linkedQuestions: [],
-          extractedText: '',
-          selected: false
-        });
-      });
+    selectedBlocks = selectedBlocks.map(block => {
+      if (checkedBlocks.has(block.id)) {
+        return { ...block, type: bulkType };
+      }
+      return block;
     });
     
-    // 병합된 블록 제거하고 분리된 블록 추가
-    selectedBlocks = selectedBlocks.filter(b => !selected.includes(b));
-    selectedBlocks = [...selectedBlocks, ...restoredBlocks];
-  }
-  
-  // Drag and drop functions
-  function handleDragStart(event, blockId) {
-    draggedBlockId = blockId;
-    event.dataTransfer.effectAllowed = 'move';
-  }
-  
-  function handleDragOver(event, blockId) {
-    event.preventDefault();
-    dragOverBlockId = blockId;
-  }
-  
-  function handleDrop(event) {
-    event.preventDefault();
-    
-    if (draggedBlockId && dragOverBlockId && draggedBlockId !== dragOverBlockId) {
-      const draggedIndex = selectedBlocks.findIndex(b => b.id === draggedBlockId);
-      const dropIndex = selectedBlocks.findIndex(b => b.id === dragOverBlockId);
-      
-      if (draggedIndex !== -1 && dropIndex !== -1) {
-        const newBlocks = [...selectedBlocks];
-        const [removed] = newBlocks.splice(draggedIndex, 1);
-        newBlocks.splice(dropIndex, 0, removed);
-        selectedBlocks = newBlocks;
-      }
-    }
-    
-    draggedBlockId = null;
-    dragOverBlockId = null;
-  }
-  
-  // 일괄 입력 함수
-  function applyBulkValue(field, value) {
-    if (!value) return;
-    
-    selectedBlocks = selectedBlocks.map(block => ({
-      ...block,
-      [field]: value
-    }));
-    
-    // 입력 필드 초기화
-    if (field === 'type') bulkBlockType = '';
-    if (field === 'format') bulkQuestionType = '';
-    if (field === 'score') bulkScore = '';
-    if (field === 'difficulty') bulkDifficulty = '';
-  }
-  
-  // 키보드 이벤트 핸들러
-  function handleKeyDown(event) {
-    const { key, shiftKey, ctrlKey, metaKey, target } = event;
-    isShiftPressed = shiftKey;
-    isCtrlPressed = ctrlKey || metaKey;
-    
-    const maxRow = selectedBlocks.length - 1;
-    const maxCol = 5; // 타입(-1), 문항유형(0), 정답(1), 배점(2), 난이도(3), 연결(4), 태그(5)
-    const minCol = -1; // 타입 컬럼부터 시작
-    
-    let newRow = currentCell.row;
-    let newCol = currentCell.col;
-    let shouldPreventDefault = true;
-    
-    // 드롭다운 처리
-    if (target.tagName === 'SELECT' && key === 'Enter') {
-      return; // 드롭다운에서 엔터키 처리는 별도로
-    }
-    
-    switch (key) {
-      case 'ArrowUp':
-        newRow = Math.max(0, currentCell.row - 1);
-        break;
-      case 'ArrowDown':
-        newRow = Math.min(maxRow, currentCell.row + 1);
-        break;
-      case 'ArrowLeft':
-        newCol = Math.max(minCol, currentCell.col - 1);
-        break;
-      case 'ArrowRight':
-        newCol = Math.min(maxCol, currentCell.col + 1);
-        break;
-      case 'Tab':
-        if (shiftKey) {
-          newCol = currentCell.col - 1;
-          if (newCol < minCol) {
-            newCol = maxCol;
-            newRow = Math.max(0, currentCell.row - 1);
-          }
-        } else {
-          newCol = currentCell.col + 1;
-          if (newCol > maxCol) {
-            newCol = minCol;
-            newRow = Math.min(maxRow, currentCell.row + 1);
-          }
-        }
-        break;
-      case 'Enter':
-        if (target.tagName !== 'SELECT') {
-          newRow = Math.min(maxRow, currentCell.row + 1);
-        }
-        break;
-      case 'Escape':
-        selectedCells.clear();
-        selectedCells = new Set();
-        shouldPreventDefault = false;
-        break;
-      default:
-        shouldPreventDefault = false;
-    }
-    
-    if (shouldPreventDefault) {
-      event.preventDefault();
-      
-      if (newRow !== currentCell.row || newCol !== currentCell.col) {
-        moveToCell(newRow, newCol, shiftKey, ctrlKey || metaKey);
-      }
-    }
-  }
-  
-  // 셀 이동 함수
-  function moveToCell(row, col, extendSelection = false, addToSelection = false) {
-    const previousCell = { ...currentCell };
-    currentCell = { row, col };
-    
-    if (!extendSelection && !addToSelection) {
-      // 단일 선택
-      selectedCells.clear();
-      selectedCells.add(`${row},${col}`);
-      selectionStartCell = { row, col };
-    } else if (extendSelection && selectionStartCell) {
-      // Shift + 화살표: 범위 선택
-      selectedCells.clear();
-      const startRow = Math.min(selectionStartCell.row, row);
-      const endRow = Math.max(selectionStartCell.row, row);
-      const startCol = Math.min(selectionStartCell.col, col);
-      const endCol = Math.max(selectionStartCell.col, col);
-      
-      for (let r = startRow; r <= endRow; r++) {
-        for (let c = startCol; c <= endCol; c++) {
-          selectedCells.add(`${r},${c}`);
-        }
-      }
-    } else if (addToSelection) {
-      // Ctrl + 클릭: 개별 추가/제거
-      const cellKey = `${row},${col}`;
-      if (selectedCells.has(cellKey)) {
-        selectedCells.delete(cellKey);
-      } else {
-        selectedCells.add(cellKey);
-      }
-    }
-    
-    // 선택된 셀로 포커스 이동
-    const targetCell = tableElement?.querySelector(`[data-cell="${row}-${col}"]`);
-    if (targetCell) {
-      targetCell.focus();
-    }
-    
-    // 리액티브 업데이트 트리거
-    selectedCells = new Set(selectedCells);
-  }
-  
-  // 다음 셀로 이동
-  function moveToNextCell(row, col) {
-    const maxRow = selectedBlocks.length - 1;
-    const maxCol = 5;
-    const minCol = -1;
-    
-    let newCol = col + 1;
-    let newRow = row;
-    
-    if (newCol > maxCol) {
-      newCol = minCol;
-      newRow = Math.min(maxRow, row + 1);
-    }
-    
-    moveToCell(newRow, newCol);
-  }
-  
-  // 셀 클릭 이벤트
-  function handleCellClick(event, row, col) {
-    if (event.shiftKey && selectionStartCell) {
-      // Shift + 클릭: 범위 선택
-      moveToCell(row, col, true, false);
-    } else if (event.ctrlKey || event.metaKey) {
-      // Ctrl/Cmd + 클릭: 다중 선택
-      moveToCell(row, col, false, true);
-    } else {
-      // 일반 클릭: 단일 선택
-      moveToCell(row, col, false, false);
-    }
-  }
-  
-  // 선택된 셀에 값 적용
-  function applyValueToSelectedCells(field, value) {
-    if (!value || selectedCells.size === 0) return;
-    
-    // field에 따른 컬럼 번호 결정
-    let targetCol;
-    if (field === 'type') targetCol = -1;
-    else if (field === 'format') targetCol = 0;
-    else if (field === 'score') targetCol = 2;
-    else if (field === 'difficulty') targetCol = 3;
-    
-    selectedCells.forEach(cellKey => {
-      const [row, col] = cellKey.split(',').map(Number);
-      
-      // 해당 컬럼의 셀만 업데이트
-      if (col === targetCol && selectedBlocks[row]) {
-        // 타입 변경 시 format 초기화
-        if (field === 'type' && value !== 'question') {
-          selectedBlocks[row] = {
-            ...selectedBlocks[row],
-            type: value,
-            format: '',
-            answer: '',
-            score: '',
-            difficulty: ''
-          };
-        } else {
-          selectedBlocks[row] = {
-            ...selectedBlocks[row],
-            [field]: value
-          };
-        }
-      }
-    });
-    
-    // 리액티브 업데이트
+    // Svelte 반응성 트리거를 위한 명시적 재할당
     selectedBlocks = [...selectedBlocks];
+    
+    bulkType = '';
+    
+    // 블록 타입 변경 후 번호 재계산
+    recalculateBlockNumbers();
+    
+    drawExistingBlocks();
   }
   
-  // 셀 선택 여부 확인
-  function isCellSelected(row, col) {
-    return selectedCells.has(`${row},${col}`);
+  function applyBulkFormat() {
+    if (!bulkFormat || checkedBlocks.size === 0) return;
+    
+    selectedBlocks = selectedBlocks.map(block => {
+      if (checkedBlocks.has(block.id) && block.type === 'question') {
+        return { ...block, format: bulkFormat };
+      }
+      return block;
+    });
+    bulkFormat = '';
   }
   
-  // 현재 포커스된 셀인지 확인
-  function isCurrentCell(row, col) {
-    return currentCell.row === row && currentCell.col === col;
+  function applyBulkScore() {
+    if (!bulkScore || checkedBlocks.size === 0) return;
+    
+    selectedBlocks = selectedBlocks.map(block => {
+      if (checkedBlocks.has(block.id) && block.type === 'question') {
+        return { ...block, score: parseInt(bulkScore) };
+      }
+      return block;
+    });
+    bulkScore = '';
+  }
+  
+  function applyBulkDifficulty() {
+    if (!bulkDifficulty || checkedBlocks.size === 0) return;
+    
+    selectedBlocks = selectedBlocks.map(block => {
+      if (checkedBlocks.has(block.id)) {
+        return { ...block, difficulty: bulkDifficulty };
+      }
+      return block;
+    });
+    bulkDifficulty = '';
+  }
+  
+  // 커스텀 태그 관련 함수
+  function addCustomTag(block, tag) {
+    if (!block.customTags) {
+      block.customTags = [];
+    }
+    if (!block.customTags.includes(tag)) {
+      block.customTags.push(tag);
+      selectedBlocks = selectedBlocks;
+    }
+  }
+  
+  function removeCustomTag(block, tag) {
+    if (block.customTags) {
+      block.customTags = block.customTags.filter(t => t !== tag);
+      selectedBlocks = selectedBlocks;
+    }
+  }
+  
+  // 완료된 항목 수 계산
+  function getCompletedCount() {
+    return selectedBlocks.filter(block => 
+      block.type === 'question' && 
+      block.format && 
+      block.answer && 
+      block.score
+    ).length;
+  }
+  
+  // 키보드 제어 함수들
+  function handleKeyDown(event) {
+    if (extractionStep !== 'configure-blocks' || isEditingCell) return;
+    
+    switch (event.key) {
+      case 'ArrowUp':
+        event.preventDefault();
+        if (selectedRowIndex > 0) {
+          selectedRowIndex--;
+          scrollToRow(selectedRowIndex);
+        }
+        break;
+        
+      case 'ArrowDown':
+        event.preventDefault();
+        if (selectedRowIndex < selectedBlocks.length - 1) {
+          selectedRowIndex++;
+          scrollToRow(selectedRowIndex);
+        }
+        break;
+        
+      case 'Enter':
+        event.preventDefault();
+        if (!event.shiftKey) {
+          // Enter: 현재 행의 제목 편집
+          isEditingCell = true;
+          focusOnCell('title', selectedRowIndex);
+        } else {
+          // Shift+Enter: 다음 필드로 이동
+          moveToNextField();
+        }
+        break;
+        
+      case 'Delete':
+        if (event.ctrlKey || event.metaKey) {
+          event.preventDefault();
+          // Ctrl/Cmd+Delete: 현재 행 삭제
+          if (selectedBlocks[selectedRowIndex]) {
+            removeBlock(selectedBlocks[selectedRowIndex].id);
+            if (selectedRowIndex >= selectedBlocks.length) {
+              selectedRowIndex = Math.max(0, selectedBlocks.length - 1);
+            }
+          }
+        }
+        break;
+        
+      case 'a':
+        if (event.ctrlKey || event.metaKey) {
+          event.preventDefault();
+          // Ctrl/Cmd+A: 모두 선택
+          toggleAllBlocks();
+        }
+        break;
+        
+      case 'Space':
+        event.preventDefault();
+        // Space: 현재 행 체크박스 토글
+        if (selectedBlocks[selectedRowIndex]) {
+          toggleBlockCheck(selectedBlocks[selectedRowIndex].id);
+        }
+        break;
+        
+      case 'Tab':
+        if (!event.shiftKey) {
+          // Tab: 다음 필드로 이동
+          event.preventDefault();
+          moveToNextField();
+        } else {
+          // Shift+Tab: 이전 필드로 이동
+          event.preventDefault();
+          moveToPrevField();
+        }
+        break;
+        
+      case 'Escape':
+        // Esc: 편집 모드 종료
+        isEditingCell = false;
+        break;
+        
+      case 'F2':
+        // F2: 현재 셀 편집
+        event.preventDefault();
+        isEditingCell = true;
+        focusOnCell('title', selectedRowIndex);
+        break;
+    }
+  }
+  
+  function scrollToRow(index) {
+    const table = document.querySelector('.overflow-x-auto');
+    const rows = table?.querySelectorAll('tbody tr');
+    if (rows && rows[index]) {
+      rows[index].scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }
+  
+  function focusOnCell(fieldName, rowIndex) {
+    setTimeout(() => {
+      const selector = `#${fieldName}-${rowIndex}`;
+      const element = document.querySelector(selector);
+      if (element) {
+        element.focus();
+        if (element.select) element.select();
+      }
+    }, 50);
+  }
+  
+  function moveToNextField() {
+    // 현재 블록의 타입에 따라 다음 필드 결정
+    const block = selectedBlocks[selectedRowIndex];
+    if (!block) return;
+    
+    // 필드 순서: title -> type -> format(문제일 때) -> answer(문제일 때) -> tags
+    // 구현은 간단하게 다음 행으로 이동
+    if (selectedRowIndex < selectedBlocks.length - 1) {
+      selectedRowIndex++;
+      scrollToRow(selectedRowIndex);
+    }
+  }
+  
+  function moveToPrevField() {
+    if (selectedRowIndex > 0) {
+      selectedRowIndex--;
+      scrollToRow(selectedRowIndex);
+    }
+  }
+  
+  // Canvas 초기화 action
+  function initCanvas(node) {
+    ctx = node.getContext('2d');
+    if (pdfDoc) {
+      renderPage(currentPage);
+    }
+  }
+  
+  // 오버레이 Canvas 초기화 action
+  function initOverlayCanvas(node) {
+    overlayCtx = node.getContext('2d');
+    // 초기화 후 블록 다시 그리기
+    setTimeout(() => {
+      drawExistingBlocks();
+    }, 200);
   }
 </script>
 
@@ -605,46 +1074,80 @@
 </svelte:head>
 
 <div class="min-h-screen bg-base-200">
-  <div class="container mx-auto px-4 py-6">
-    <!-- 헤더 -->
-    <div class="mb-6">
-      <h1 class="text-2xl font-bold mb-2">문항 추출</h1>
-      <div class="breadcrumbs text-sm">
-        <ul>
-          <li><a href="/">홈</a></li>
-          <li><a href="/my-materials">내 자료</a></li>
-          <li>문항 추출</li>
-        </ul>
+  <!-- 상단 헤더 -->
+  <div class="bg-base-100 shadow-sm">
+    <div class="container mx-auto px-4 py-4">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-4">
+          <h1 class="text-2xl font-bold">문항 추출</h1>
+          {#if selectedMaterial}
+            <div class="flex items-center gap-2 text-sm text-base-content/70">
+              <span>{selectedMaterial.title}</span>
+              <span class="text-primary">{currentPage}/{totalPages} 페이지</span>
+            </div>
+          {/if}
+        </div>
+        
+        <div class="breadcrumbs text-sm">
+          <ul>
+            <li><a href="/">홈</a></li>
+            <li>문항 추출</li>
+          </ul>
+        </div>
       </div>
     </div>
-    
+  </div>
+
+  <div class="container mx-auto px-4 py-6">
     {#if extractionStep === 'select-material'}
       <!-- 1단계: 자료 선택 -->
-      <div class="card bg-base-100 shadow-xl">
+      <div class="card bg-base-100 shadow">
         <div class="card-body">
           <h2 class="card-title mb-4">문항을 추출할 자료를 선택하세요</h2>
           
-          {#if $materials.length === 0}
-            <div class="text-center py-8">
-              <p class="text-base-content/70 mb-4">업로드된 자료가 없습니다.</p>
+          {#if $materials.filter(m => m.type === 'original').length === 0}
+            <div class="text-center py-12">
+              <div class="text-4xl mb-4">📁</div>
+              <h3 class="text-lg font-medium mb-2">원본 자료가 없습니다</h3>
+              <p class="text-base-content/70 mb-4">
+                먼저 자료를 업로드해주세요
+              </p>
               <a href="/my-materials" class="btn btn-primary">자료 업로드하기</a>
             </div>
           {:else}
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {#each $materials as material}
+              {#each $materials.filter(m => m.type === 'original') as material}
                 <div 
-                  class="card bg-base-200 hover:shadow-lg transition-shadow cursor-pointer"
+                  class="card bg-base-200 shadow-lg hover:shadow-xl transition-shadow cursor-pointer border-2 border-transparent hover:border-primary"
                   on:click={() => selectMaterial(material)}
+                  role="button"
+                  tabindex="0"
+                  on:keydown={(e) => e.key === 'Enter' && selectMaterial(material)}
                 >
                   <div class="card-body">
-                    <h3 class="card-title text-lg">{material.title}</h3>
-                    <div class="flex gap-2 mb-2">
-                      <span class="badge badge-outline">{material.subject}</span>
-                      <span class="badge badge-outline">{material.grade}</span>
+                    <div class="flex items-start justify-between mb-2">
+                      <div class="text-2xl">{getFileTypeIcon(material.file_type)}</div>
+                      {#if material.is_extracted}
+                        <div class="badge badge-success badge-sm">추출됨</div>
+                      {:else}
+                        <div class="badge badge-primary badge-sm">원본</div>
+                      {/if}
                     </div>
-                    <p class="text-sm text-base-content/70">
-                      {material.pages || 0} 페이지
-                    </p>
+                    
+                    <h3 class="card-title text-sm mb-2">{material.title}</h3>
+                    
+                    <div class="text-xs text-base-content/70 space-y-1">
+                      {#if material.file_size}
+                        <p>{formatFileSize(material.file_size)}</p>
+                      {/if}
+                      {#if material.pages}
+                        <p>{material.pages}페이지</p>
+                      {/if}
+                      {#if material.is_extracted}
+                        <p class="text-success">{material.extracted_count}개 추출됨</p>
+                      {/if}
+                    </div>
+                    
                     <div class="card-actions justify-end mt-2">
                       <button class="btn btn-primary btn-sm">선택</button>
                     </div>
@@ -657,347 +1160,353 @@
       </div>
       
     {:else if extractionStep === 'extract-blocks'}
-      <!-- 2단계: 블록 추출 -->
-      <div class="grid grid-cols-12 gap-4">
-        <!-- PDF 뷰어 영역 -->
-        <div class="col-span-8">
-          <div class="card bg-base-100 shadow-xl h-full">
-            <div class="card-body p-4">
+      <!-- 2단계: 블록 영역 지정 -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <!-- 좌측: 페이지 미리보기 -->
+        <div class="lg:col-span-2">
+          <div class="card bg-base-100 shadow">
+            <div class="card-body">
               <!-- 툴바 -->
               <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center gap-4">
+                  <div class="tabs tabs-boxed">
+                    <button 
+                      class="tab tab-sm {extractionMode === 'manual' ? 'tab-active' : ''}"
+                      on:click={() => setExtractionMode('manual')}
+                    >
+                      수동 선택
+                    </button>
+                    <button 
+                      class="tab tab-sm {extractionMode === 'auto' ? 'tab-active' : ''}"
+                      on:click={() => setExtractionMode('auto')}
+                    >
+                      자동 추출
+                    </button>
+                  </div>
+                  
+                  {#if extractionMode === 'auto'}
+                    <button 
+                      class="btn btn-primary btn-sm" 
+                      on:click={autoExtractBlocks}
+                      disabled={isExtracting}
+                    >
+                      {#if isExtracting}
+                        <span class="loading loading-spinner loading-xs"></span>
+                        추출 중...
+                      {:else}
+                        자동 문항 추출
+                      {/if}
+                    </button>
+                  {/if}
+                </div>
+                
+                <!-- 줌 컨트롤 -->
                 <div class="flex items-center gap-2">
                   <button 
-                    class="btn btn-sm"
+                    class="btn btn-ghost btn-sm"
+                    on:click={handleZoomOut}
+                    disabled={zoomLevel <= minZoom}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4" />
+                    </svg>
+                  </button>
+                  <span class="text-sm font-medium">{Math.round(zoomLevel * 100)}%</span>
+                  <button 
+                    class="btn btn-ghost btn-sm"
+                    on:click={handleZoomIn}
+                    disabled={zoomLevel >= maxZoom}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                    </svg>
+                  </button>
+                  <button 
+                    class="btn btn-ghost btn-sm"
+                    on:click={handleZoomReset}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                    </svg>
+                  </button>
+                </div>
+                
+                <!-- 페이지 네비게이션 -->
+                <div class="flex items-center gap-2">
+                  <button 
+                    class="btn btn-ghost btn-sm"
                     disabled={currentPage <= 1}
                     on:click={() => handlePageChange(currentPage - 1)}
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
-                      <path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/>
-                    </svg>
+                    ←
                   </button>
-                  <span class="text-sm font-medium">{currentPage} / {totalPages}</span>
+                  <span class="text-sm">{currentPage} / {totalPages}</span>
                   <button 
-                    class="btn btn-sm"
+                    class="btn btn-ghost btn-sm"
                     disabled={currentPage >= totalPages}
                     on:click={() => handlePageChange(currentPage + 1)}
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
-                      <path d="M8.59 16.59L10 18l6-6-6-6-1.41 1.41L13.17 12z"/>
-                    </svg>
-                  </button>
-                </div>
-                
-                <!-- 추출 모드 선택 -->
-                <div class="flex items-center gap-2">
-                  <span class="text-sm font-medium">추출 모드:</span>
-                  <div class="join">
-                    <button 
-                      class="btn btn-sm join-item {extractionMode === 'manual' ? 'btn-active' : ''}"
-                      on:click={() => setExtractionMode('manual')}
-                    >
-                      수동
-                    </button>
-                    <button 
-                      class="btn btn-sm join-item {extractionMode === 'auto' ? 'btn-active' : ''}"
-                      on:click={() => setExtractionMode('auto')}
-                    >
-                      AI 자동
-                    </button>
-                  </div>
-                  {#if extractionMode === 'auto'}
-                    <button class="btn btn-primary btn-sm ml-2" on:click={autoExtractBlocks}>
-                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
-                      </svg>
-                      자동으로 추출하기
-                    </button>
-                  {/if}
-                </div>
-                
-                <!-- 확대/축소 -->
-                <div class="flex items-center gap-2">
-                  <button class="btn btn-sm btn-ghost" on:click={() => viewScale = Math.max(0.5, viewScale - 0.1)}>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
-                      <path d="M19 13H5v-2h14v2z"/>
-                    </svg>
-                  </button>
-                  <span class="text-sm">{Math.round(viewScale * 100)}%</span>
-                  <button class="btn btn-sm btn-ghost" on:click={() => viewScale = Math.min(2, viewScale + 0.1)}>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
-                      <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
-                    </svg>
+                    →
                   </button>
                 </div>
               </div>
               
-              <!-- PDF 페이지 -->
-              <div class="relative overflow-auto bg-gray-100 rounded-lg" style="height: 700px;">
-                <div 
-                  class="relative mx-auto bg-white shadow-lg select-none"
-                  style="width: {pdfPageWidth * viewScale}px; height: {pdfPageHeight * viewScale}px; transform-origin: top center;"
-                  on:mousedown={startSelection}
-                  on:mousemove={updateSelection}
-                  on:mouseup={endSelection}
-                >
-                  <!-- PDF 콘텐츠 플레이스홀더 -->
-                  <div class="absolute inset-0 p-16" style="transform: scale({viewScale});">
-                    <h2 class="text-2xl font-bold mb-4">수학 문제집 - {selectedMaterial?.title}</h2>
-                    <p class="text-sm text-gray-600 mb-8">페이지 {currentPage}</p>
-                    
-                    {#if currentPage === 1}
-                      <div class="space-y-6">
-                        <div class="border-b pb-4">
-                          <p class="font-medium mb-2">1. 다음 중 이차함수 f(x) = ax² + bx + c의 그래프가 아래로 볼록한 조건은?</p>
-                          <div class="pl-4 space-y-1 text-sm">
+              <!-- 페이지 미리보기 -->
+              <div class="bg-gray-50 p-4 rounded-lg overflow-auto" style="max-height: 600px;">
+                {#if fileDataUrl}
+                  {#if selectedMaterial.file_type === 'application/pdf'}
+                    <!-- PDF 캔버스 -->
+                    <div class="flex justify-center relative" bind:this={canvasContainer}>
+                      <div class="relative">
+                        <canvas
+                          bind:this={canvas}
+                          class="shadow-lg"
+                          use:initCanvas
+                        ></canvas>
+                        <canvas
+                          bind:this={overlayCanvas}
+                          class="absolute top-0 left-0 {extractionMode === 'manual' ? 'cursor-crosshair' : ''} pointer-events-auto"
+                          style="position: absolute; top: 0; left: 0;"
+                          use:initOverlayCanvas
+                          on:mousedown={handleMouseDown}
+                          on:mousemove={handleMouseMove}
+                          on:mouseup={handleMouseUp}
+                          on:mouseleave={handleMouseUp}
+                        ></canvas>
+                      </div>
+                      {#if extractionMode === 'manual' && selectedBlocks.length === 0}
+                        <div class="absolute top-2 left-2 bg-blue-500 text-white px-3 py-1 rounded-md text-sm">
+                          영역을 드래그하여 선택하세요
+                        </div>
+                      {/if}
+                    </div>
+                  {:else if selectedMaterial.file_type.startsWith('image/')}
+                    <!-- 이미지 표시 -->
+                    <div class="flex justify-center">
+                      <img 
+                        src={fileDataUrl} 
+                        alt={selectedMaterial.title}
+                        style="max-width: 100%;"
+                        class="shadow-lg"
+                      />
+                    </div>
+                  {/if}
+                {:else if isLoading}
+                  <div class="flex items-center justify-center h-96">
+                    <div class="text-center">
+                      <span class="loading loading-spinner loading-lg"></span>
+                      <p class="mt-4">파일을 불러오는 중...</p>
+                    </div>
+                  </div>
+                {:else}
+                  <!-- 더미 페이지 콘텐츠 -->
+                  <div class="bg-white shadow-lg mx-auto relative" style="width: 100%; max-width: 595px; min-height: 400px;">
+                    <div class="p-6">
+                      <h2 class="text-lg font-bold mb-4">수학 문제 - 페이지 {currentPage}</h2>
+                      
+                      <div class="space-y-4">
+                        <div class="p-3 border border-gray-200 rounded">
+                          <p class="font-medium mb-2">1. 다음 중 이차함수의 그래프가 아래로 볼록한 조건은?</p>
+                          <div class="ml-4 space-y-1 text-sm">
                             <p>① a &gt; 0</p>
                             <p>② a &lt; 0</p>
                             <p>③ a = 0</p>
-                            <p>④ b &gt; 0</p>
-                            <p>⑤ c &gt; 0</p>
+                            <p>④ 상관없음</p>
                           </div>
                         </div>
                         
-                        <div class="border-b pb-4">
-                          <p class="font-medium mb-2">2. 함수 f(x) = x² - 4x + 3의 최솟값을 구하시오.</p>
-                          <div class="pl-4 mt-2">
-                            <p class="text-sm text-gray-600">풀이:</p>
-                          </div>
+                        <div class="p-3 border border-gray-200 rounded">
+                          <p class="font-medium">2. f(x) = x² - 4x + 3의 최솟값을 구하시오.</p>
                         </div>
                         
-                        <div class="bg-blue-50 p-4 rounded">
-                          <p class="font-medium text-blue-800 mb-2">💡 핵심 개념</p>
-                          <p class="text-sm">이차함수의 그래프가 아래로 볼록하려면 이차항의 계수가 양수여야 합니다.</p>
+                        <div class="p-3 bg-blue-50 border border-blue-200 rounded">
+                          <h4 class="font-medium text-blue-800 mb-2">해설</h4>
+                          <p class="text-sm text-blue-700">이차함수 f(x) = ax² + bx + c에서 a > 0이면 그래프가 아래로 볼록하다.</p>
                         </div>
                       </div>
-                    {:else if currentPage === 2}
-                      <div class="space-y-6">
-                        <div class="bg-gray-50 p-4 rounded mb-4">
-                          <p class="font-medium mb-2">※ 다음 지문을 읽고 물음에 답하시오. (3~4)</p>
-                          <p class="text-sm">이차함수 f(x) = ax² + bx + c (a ≠ 0)의 그래프는 포물선이며, a의 부호에 따라 아래로 볼록하거나 위로 볼록한 형태를 가진다.</p>
-                        </div>
-                        
-                        <div class="border-b pb-4">
-                          <p class="font-medium mb-2">3. 위 지문의 함수에서 a = 1, b = -2, c = 3일 때, 꼭짓점의 좌표를 구하시오.</p>
-                        </div>
-                        
-                        <div class="border-b pb-4">
-                          <p class="font-medium mb-2">4. 이차함수 f(x) = x² - 2x + k가 x축과 서로 다른 두 점에서 만날 조건을 구하고, 그 이유를 설명하시오. (10점)</p>
-                          <div class="pl-4 mt-4 space-y-2">
-                            <p class="text-sm text-gray-600">조건:</p>
-                            <p class="text-sm text-gray-600">이유:</p>
-                          </div>
-                        </div>
-                      </div>
-                    {/if}
+                    </div>
                   </div>
-                  
-                  <!-- 선택된 영역 표시 -->
-                  {#each selectedBlocks.filter(b => b.page === currentPage) as block}
-                    <div 
-                      class="absolute border-2 transition-all duration-200 {block.selected ? 'ring-2 ring-primary ring-offset-2' : ''}"
-                      style="
-                        border-color: {getBlockTypeInfo(block.type).color === 'primary' ? '#570df8' : 
-                                      getBlockTypeInfo(block.type).color === 'secondary' ? '#f000b8' :
-                                      getBlockTypeInfo(block.type).color === 'info' ? '#37cdbe' :
-                                      getBlockTypeInfo(block.type).color === 'success' ? '#36d399' : '#999'};
-                        background-color: {block.selected ? 
-                          (getBlockTypeInfo(block.type).color === 'primary' ? 'rgba(87, 13, 248, 0.2)' : 
-                           getBlockTypeInfo(block.type).color === 'secondary' ? 'rgba(240, 0, 184, 0.2)' :
-                           getBlockTypeInfo(block.type).color === 'info' ? 'rgba(55, 205, 190, 0.2)' :
-                           getBlockTypeInfo(block.type).color === 'success' ? 'rgba(54, 211, 153, 0.2)' : 'rgba(153, 153, 153, 0.2)') :
-                          (getBlockTypeInfo(block.type).color === 'primary' ? 'rgba(87, 13, 248, 0.1)' : 
-                           getBlockTypeInfo(block.type).color === 'secondary' ? 'rgba(240, 0, 184, 0.1)' :
-                           getBlockTypeInfo(block.type).color === 'info' ? 'rgba(55, 205, 190, 0.1)' :
-                           getBlockTypeInfo(block.type).color === 'success' ? 'rgba(54, 211, 153, 0.1)' : 'rgba(153, 153, 153, 0.1)')};
-                        left: {block.selection.x * viewScale}px; 
-                        top: {block.selection.y * viewScale}px; 
-                        width: {block.selection.width * viewScale}px; 
-                        height: {block.selection.height * viewScale}px;
-                      "
-                    >
-                      <div class="absolute -top-6 left-0 text-xs font-medium whitespace-nowrap px-1 py-0.5 rounded"
-                           style="background-color: {getBlockTypeInfo(block.type).color === 'primary' ? '#570df8' : 
-                                                     getBlockTypeInfo(block.type).color === 'secondary' ? '#f000b8' :
-                                                     getBlockTypeInfo(block.type).color === 'info' ? '#37cdbe' :
-                                                     getBlockTypeInfo(block.type).color === 'success' ? '#36d399' : '#999'};
-                                  color: white;">
-                        {block.title}
-                      </div>
-                    </div>
-                  {/each}
-                  
-                  <!-- 현재 선택 중인 영역 -->
-                  {#if isSelecting && selectionBox}
-                    <div 
-                      class="absolute border-2 border-primary border-dashed bg-primary/10"
-                      style="
-                        left: {selectionBox.x * viewScale}px; 
-                        top: {selectionBox.y * viewScale}px; 
-                        width: {selectionBox.width * viewScale}px; 
-                        height: {selectionBox.height * viewScale}px;
-                      "
-                    />
-                  {/if}
-                  
-                  <!-- 마우스 좌표 표시 -->
-                  {#if extractionMode === 'manual' && isSelecting}
-                    <div class="absolute bg-black text-white text-xs px-2 py-1 rounded pointer-events-none"
-                         style="left: {mouseX * viewScale + 10}px; top: {mouseY * viewScale + 10}px;">
-                      {Math.round(mouseX)}, {Math.round(mouseY)}
-                    </div>
-                  {/if}
-                </div>
+                {/if}
               </div>
               
-              <!-- 도움말 -->
-              <div class="mt-4 text-sm text-base-content/70">
-                {#if extractionMode === 'manual'}
-                  <p>📌 마우스로 드래그하여 문항 영역을 선택하세요. 선택한 영역은 오른쪽 패널에서 관리할 수 있습니다.</p>
-                {:else}
-                  <p>🤖 AI가 자동으로 문항을 감지합니다. '자동 추출 시작' 버튼을 클릭하세요.</p>
-                {/if}
+              <div class="mt-4 text-center">
+                <p class="text-sm text-base-content/70">
+                  {#if extractionMode === 'manual'}
+                    수동 선택 모드: 블록 추가 버튼을 클릭하여 문제를 추가하세요
+                  {:else}
+                    자동 추출 모드: 자동 문항 추출 버튼을 클릭하세요
+                  {/if}
+                </p>
               </div>
             </div>
           </div>
         </div>
         
-        <!-- 사이드 패널 -->
-        <div class="col-span-4">
-          <div class="card bg-base-100 shadow-xl h-full">
+        <!-- 우측: 선택된 블록 관리 -->
+        <div class="lg:col-span-1">
+          <div class="card bg-base-100 shadow">
             <div class="card-body p-4">
+              <!-- 헤더 -->
               <div class="flex items-center justify-between mb-4 border-b pb-2">
                 <div class="flex items-center gap-3">
                   <input 
                     type="checkbox"
                     class="checkbox checkbox-sm"
-                    checked={selectedBlocks.length > 0 && selectedBlocks.every(block => block.selected)}
-                    on:change={(e) => {
-                      const checked = e.target.checked;
-                      selectedBlocks.forEach(block => {
-                        block.selected = checked;
-                      });
-                      selectedBlocks = [...selectedBlocks];
-                    }}
+                    checked={allChecked}
+                    indeterminate={someChecked}
+                    on:change={toggleAllBlocks}
                   />
                   <h3 class="font-bold text-lg">추출된 블록</h3>
                 </div>
                 <div class="flex items-center gap-2">
-                  {#if selectedBlocks.some(b => b.selected)}
-                    <button 
-                      class="btn btn-ghost btn-xs"
-                      on:click={mergeSelectedBlocks}
-                      disabled={selectedBlocks.filter(b => b.selected).length < 2}
-                    >
-                      병합
-                    </button>
-                    <div class="divider divider-horizontal mx-0"></div>
-                    <button 
-                      class="btn btn-ghost btn-xs"
-                      on:click={splitSelectedBlocks}
-                      disabled={!selectedBlocks.some(b => b.selected && b.isMerged)}
-                    >
-                      분리
-                    </button>
-                    <div class="divider divider-horizontal mx-0"></div>
-                    <button 
-                      class="btn btn-ghost btn-xs text-error"
-                      on:click={() => {
-                        selectedBlocks = selectedBlocks.filter(b => !b.selected);
-                      }}
-                    >
-                      삭제
-                    </button>
-                  {/if}
+                  <button class="btn btn-ghost btn-xs">병합</button>
+                  <div class="divider divider-horizontal mx-0"></div>
+                  <button class="btn btn-ghost btn-xs" disabled>분리</button>
+                  <div class="divider divider-horizontal mx-0"></div>
+                  <button 
+                    class="btn btn-ghost btn-xs text-error"
+                    on:click={batchDeleteBlocks}
+                    disabled={checkedBlocks.size === 0}
+                  >
+                    삭제
+                  </button>
                 </div>
               </div>
               
-              <!-- 추출된 블록 목록 -->
+              <!-- 블록 리스트 -->
               <div class="space-y-2 overflow-y-auto" style="max-height: 600px;">
-                {#each selectedBlocks as block, index (block.id)}
+                {#each selectedBlocks as block, index}
                   <div 
-                    class="rect-block-item {dragOverBlockId === block.id ? 'ring-2 ring-primary' : ''}"
+                    class="rect-block-item {dropTargetBlock?.id === block.id ? 'drag-over' : ''}" 
                     draggable="true"
-                    on:dragstart={(e) => handleDragStart(e, block.id)}
-                    on:dragover={(e) => handleDragOver(e, block.id)}
-                    on:drop={handleDrop}
-                    on:dragend={() => {
-                      draggedBlockId = null;
-                      dragOverBlockId = null;
-                    }}
+                    on:dragstart={(e) => handleDragStart(e, block)}
+                    on:dragend={handleDragEnd}
+                    on:dragover={(e) => handleDragOver(e, block)}
+                    on:dragleave={handleDragLeave}
+                    on:drop={(e) => handleDrop(e, block)}
                   >
                     <div class="space-y-2">
-                      <!-- 첫 번째 줄: 체크박스, 블록 번호, 블록 타입 선택 버튼들, 삭제 버튼 -->
+                      <!-- 블록 헤더 -->
                       <div class="flex items-center gap-2">
-                        <!-- 체크박스 -->
                         <input 
-                          type="checkbox" 
+                          type="checkbox"
                           class="checkbox checkbox-sm checkbox-primary"
-                          bind:checked={block.selected}
+                          checked={checkedBlocks.has(block.id)}
+                          on:change={() => toggleBlockCheck(block.id)}
                         />
-                        
-                        <!-- 블록 번호와 페이지 -->
+                        {#if (block.type === 'passage' || block.type === 'explanation') && block.linkedBlocks && block.linkedBlocks.length > 0}
+                          <div class="flex items-center gap-1">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 24 24" class="text-primary">
+                              <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"></path>
+                            </svg>
+                          </div>
+                        {/if}
+                        {#if block.type === 'question'}
+                          {@const linkedPassages = selectedBlocks.filter(b => 
+                            (b.type === 'passage' || b.type === 'explanation') && 
+                            b.linkedBlocks && b.linkedBlocks.includes(block.id)
+                          )}
+                          {#if linkedPassages.length > 0}
+                            <div class="flex items-center gap-1">
+                              {#each linkedPassages as linked}
+                                <div class="tooltip" data-tip={linked.title}>
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 24 24" 
+                                    class="text-{linked.type === 'passage' ? 'secondary' : 'accent'}">
+                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/>
+                                  </svg>
+                                </div>
+                              {/each}
+                            </div>
+                          {/if}
+                        {/if}
                         <span class="font-medium text-sm min-w-[80px]">{block.title} ({block.page}p)</span>
-                        
-                        <!-- 블록 타입 선택 버튼들 -->
                         <div class="flex gap-1">
-                          {#each blockTypes as blockType}
-                            <button 
-                              class="btn btn-xs {block.type === blockType.value ? `btn-${blockType.color}` : 'btn-ghost'}"
-                              on:click={() => {
-                                block.type = blockType.value;
-                                // 타입 변경시 타이틀도 업데이트
-                                const typeLabels = {
-                                  'question': '문항',
-                                  'passage': '지문',
-                                  'concept': '개념',
-                                  'explanation': '해설'
-                                };
-                                const count = selectedBlocks.filter((b, idx) => idx < selectedBlocks.indexOf(block) && b.type === blockType.value).length + 1;
-                                block.title = `${typeLabels[blockType.value]} ${count}`;
-                              }}
+                          {#each blockTypes as type}
+                            <button
+                              class="btn btn-xs {block.type === type.value ? type.color : 'btn-ghost'}"
+                              on:click={() => updateBlockType(block.id, type.value)}
                             >
-                              {blockType.label}
+                              {type.label}
                             </button>
                           {/each}
                         </div>
-                        
                         <div class="flex-1"></div>
-                        
-                        <!-- 삭제 버튼 -->
                         <button 
                           class="btn btn-ghost btn-xs btn-circle text-error hover:bg-error hover:text-white"
-                          on:click={() => removeBlock(block.id)}
                           title="블록 삭제"
+                          on:click={() => removeBlock(block.id)}
                         >
                           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
-                            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"></path>
                           </svg>
                         </button>
                       </div>
                       
-                      <!-- 두 번째 줄: 문항 유형 선택(문항일 때만), 순서 변경 버튼 -->
-                      <div class="flex items-center gap-2 pl-6">
-                        {#if block.type === 'question'}
-                          <select 
-                            class="select select-xs select-bordered"
-                            bind:value={block.format}
-                          >
+                      <!-- 블록 옵션 -->
+                      {#if block.type === 'question'}
+                        <div class="flex items-center gap-2 pl-6">
+                          <select class="select select-xs select-bordered" bind:value={block.format}>
                             <option value="">문항 유형 선택</option>
-                            {#each questionFormats as format}
-                              <option value={format.value}>{format.label}</option>
-                            {/each}
+                            <option value="multiple_choice">객관식</option>
+                            <option value="short_answer">단답형</option>
+                            <option value="essay">서술형</option>
+                            <option value="true_false">O/X</option>
                           </select>
-                        {/if}
-                        
-                        <div class="flex-1"></div>
-                        
-                        <!-- 드래그 핸들 -->
-                        <div class="rect-drag-icon cursor-move text-gray-400 hover:text-gray-600">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
-                            <path d="M5 15a1 1 0 1 1 0-2h14a1 1 0 1 1 0 2zm0-4a1 1 0 1 1 0-2h14a1 1 0 1 1 0 2z"></path>
-                          </svg>
+                          <div class="flex-1"></div>
+                          <div class="rect-drag-icon cursor-move text-gray-400 hover:text-gray-600">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                              <path d="M5 15a1 1 0 1 1 0-2h14a1 1 0 1 1 0 2zm0-4a1 1 0 1 1 0-2h14a1 1 0 1 1 0 2z"></path>
+                            </svg>
+                          </div>
                         </div>
-                      </div>
+                      {:else if block.type === 'passage' || block.type === 'explanation'}
+                        <div class="flex items-center gap-2 pl-6">
+                          <div class="dropdown dropdown-top">
+                            <label tabindex="0" class="btn btn-xs btn-outline">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"></path>
+                              </svg>
+                              문제 연결
+                              {#if block.linkedBlocks && block.linkedBlocks.length > 0}
+                                <span class="badge badge-xs badge-primary">{block.linkedBlocks.length}</span>
+                              {/if}
+                            </label>
+                            <ul tabindex="0" class="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 max-h-60 overflow-y-auto z-50">
+                              {#each selectedBlocks.filter(b => b.type === 'question') as question, qIndex}
+                                <li>
+                                  <label class="cursor-pointer label">
+                                    <input 
+                                      type="checkbox" 
+                                      class="checkbox checkbox-xs"
+                                      checked={block.linkedBlocks && block.linkedBlocks.includes(question.id)}
+                                      on:change={() => toggleLinkBlock(block, question.id)}
+                                    />
+                                    <span class="label-text text-xs">{question.title}</span>
+                                  </label>
+                                </li>
+                              {/each}
+                              {#if selectedBlocks.filter(b => b.type === 'question').length === 0}
+                                <li class="text-xs text-base-content/50 p-2">문제 블록이 없습니다</li>
+                              {/if}
+                            </ul>
+                          </div>
+                          <div class="flex-1"></div>
+                          <div class="rect-drag-icon cursor-move text-gray-400 hover:text-gray-600">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                              <path d="M5 15a1 1 0 1 1 0-2h14a1 1 0 1 1 0 2zm0-4a1 1 0 1 1 0-2h14a1 1 0 1 1 0 2z"></path>
+                            </svg>
+                          </div>
+                        </div>
+                      {:else}
+                        <div class="flex items-center gap-2 pl-6">
+                          <div class="flex-1"></div>
+                          <div class="rect-drag-icon cursor-move text-gray-400 hover:text-gray-600">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 24 24">
+                              <path d="M5 15a1 1 0 1 1 0-2h14a1 1 0 1 1 0 2zm0-4a1 1 0 1 1 0-2h14a1 1 0 1 1 0 2z"></path>
+                            </svg>
+                          </div>
+                        </div>
+                      {/if}
                     </div>
                   </div>
                 {/each}
@@ -1005,73 +1514,41 @@
                 {#if selectedBlocks.length === 0}
                   <div class="text-center py-8">
                     <div class="text-4xl mb-2">📝</div>
-                    <p class="text-sm text-base-content/70 mb-2">
+                    <p class="text-sm text-base-content/70">
                       {#if extractionMode === 'manual'}
-                        문서에서 드래그하여<br/>문항 영역을 선택하세요
+                        PDF에서 마우스로<br/>
+                        영역을 드래그하세요
                       {:else}
-                        AI 자동 추출로<br/>문항을 감지하세요
+                        자동 문항 추출 버튼을 눌러주세요
                       {/if}
                     </p>
-                    {#if extractionMode === 'auto'}
-                      <button class="btn btn-primary btn-sm mt-2" on:click={autoExtractBlocks}>
-                        자동 추출 시작
-                      </button>
-                    {/if}
                   </div>
                 {/if}
               </div>
               
-              <!-- 하단 액션 버튼들 -->
+              <!-- 하단 일괄 작업 및 버튼 -->
               <div class="mt-4 pt-4 border-t border-gray-200">
-                <!-- 선택된 블록 액션 -->
-                {#if selectedBlocks.some(block => block.selected)}
+                {#if checkedBlocks.size > 0}
                   <div class="space-y-3 mb-3 bg-base-200 rounded-lg p-3">
-                    <!-- 선택된 개수 표시 -->
-                    <div class="text-sm font-bold text-primary">
-                      {selectedBlocks.filter(block => block.selected).length}개 선택됨
-                    </div>
-                    
-                    <!-- 블록 타입 변경 -->
+                    <div class="text-sm font-bold text-primary">{checkedBlocks.size}개 선택됨</div>
                     <div class="flex items-center gap-2">
                       <span class="text-sm font-medium">블록 타입 :</span>
                       <div class="flex gap-1">
-                        {#each blockTypes as blockType}
-                          <button 
-                            class="btn btn-xs {selectedBlocks.filter(b => b.selected).every(b => b.type === blockType.value) ? `btn-${blockType.color}` : 'btn-ghost'}"
+                        {#each blockTypes as type}
+                          <button
+                            class="btn btn-xs {bulkType === type.value ? type.color : 'btn-ghost'}"
                             on:click={() => {
-                              selectedBlocks.forEach(block => {
-                                if (block.selected) {
-                                  block.type = blockType.value;
-                                  // 타입 변경시 타이틀도 업데이트
-                                  const typeLabels = {
-                                    'question': '문항',
-                                    'passage': '지문',
-                                    'concept': '개념',
-                                    'explanation': '해설'
-                                  };
-                                  const count = selectedBlocks.filter((b, idx) => idx < selectedBlocks.indexOf(block) && b.type === blockType.value).length + 1;
-                                  block.title = `${typeLabels[blockType.value]} ${count}`;
-                                }
-                              });
-                              selectedBlocks = [...selectedBlocks];
+                              bulkType = type.value;
+                              batchChangeType(type.value);
                             }}
                           >
-                            {blockType.label}
+                            {type.label}
                           </button>
                         {/each}
                       </div>
                     </div>
-                    
-                    <!-- 삭제 버튼 -->
-                    <button 
-                      class="btn btn-error btn-sm btn-block"
-                      on:click={() => {
-                        if (confirm(`선택한 ${selectedBlocks.filter(block => block.selected).length}개 블록을 삭제하시겠습니까?`)) {
-                          selectedBlocks = selectedBlocks.filter(block => !block.selected);
-                        }
-                      }}
-                    >
-                      선택한 {selectedBlocks.filter(block => block.selected).length}개 블록 삭제
+                    <button class="btn btn-error btn-sm btn-block" on:click={batchDeleteBlocks}>
+                      선택한 {checkedBlocks.size}개 블록 삭제
                     </button>
                   </div>
                 {/if}
@@ -1095,111 +1572,96 @@
       </div>
       
     {:else if extractionStep === 'configure-blocks'}
-      <!-- 3단계: 추가 정보 입력 -->
+      <!-- 3단계: 블록 정보 입력 -->
       <div class="space-y-6">
         <div class="flex items-center justify-between">
           <div>
-            <h2 class="text-xl font-bold">추가 정보 입력</h2>
+            <h2 class="text-xl font-bold">블록 정보 입력</h2>
             <p class="text-base-content/70">추출된 블록들의 세부 정보를 표에서 일괄 편집하세요</p>
           </div>
           <div class="flex gap-2">
-            <button class="btn btn-outline" on:click={goBack}>
-              뒤로
-            </button>
-            <button class="btn btn-primary" on:click={finalizeExtraction}>
-              추출 완료
-            </button>
+            <button class="btn btn-outline" on:click={goBack}>뒤로</button>
+            <button class="btn btn-primary" on:click={finalizeExtraction}>추출 완료</button>
           </div>
         </div>
         
-        <!-- 일괄 입력 컨트롤 -->
+        <!-- 일괄 작업 도구 -->
         <div class="card bg-base-100 shadow">
           <div class="card-body">
             <div class="space-y-3">
-              {#if selectedCells.size > 0}
-                <div class="text-sm font-bold text-primary">
-                  {new Set(Array.from(selectedCells).map(cell => cell.split(',')[0])).size}개 블록 선택됨
+              <!-- 체크된 항목 상태 표시 -->
+              {#if checkedBlocks.size > 0}
+                <div class="text-sm text-info">
+                  {checkedBlocks.size}개 항목이 선택되었습니다.
                 </div>
               {/if}
               
               <div class="flex flex-wrap gap-3">
-                <!-- 타입 일괄 입력 -->
                 <div class="flex items-center gap-2">
                   <span class="text-sm font-medium whitespace-nowrap">블록타입 :</span>
-                  <select class="select select-bordered select-sm w-24" bind:value={bulkBlockType}>
+                  <select 
+                    class="select select-bordered select-sm w-24"
+                    bind:value={bulkType}
+                  >
                     <option value="">선택</option>
-                    {#each blockTypes as blockType}
-                      <option value={blockType.value}>{blockType.label}</option>
+                    {#each blockTypes as type}
+                      <option value={type.value}>{type.label}</option>
                     {/each}
                   </select>
                   <button 
-                    class="btn btn-primary btn-sm"
-                    on:click={() => {
-                      if (selectedCells.size > 0) {
-                        applyValueToSelectedCells('type', bulkBlockType);
-                      } else {
-                        applyBulkValue('type', bulkBlockType);
-                      }
-                    }}
-                    disabled={!bulkBlockType}
+                    class="btn btn-primary btn-sm" 
+                    disabled={!bulkType || checkedBlocks.size === 0}
+                    on:click={applyBulkType}
                   >
                     변경
                   </button>
                 </div>
                 
-                <!-- 문제 유형 일괄 입력 -->
                 <div class="flex items-center gap-2">
                   <span class="text-sm font-medium whitespace-nowrap">문항유형 :</span>
-                  <select class="select select-bordered select-sm w-24" bind:value={bulkQuestionType}>
+                  <select 
+                    class="select select-bordered select-sm w-24"
+                    bind:value={bulkFormat}
+                  >
                     <option value="">선택</option>
-                    {#each questionFormats as format}
-                      <option value={format.value}>{format.label}</option>
-                    {/each}
+                    <option value="multiple_choice">객관식</option>
+                    <option value="short_answer">단답형</option>
+                    <option value="essay">서술형</option>
+                    <option value="true_false">O/X</option>
                   </select>
                   <button 
-                    class="btn btn-primary btn-sm"
-                    on:click={() => {
-                      if (selectedCells.size > 0) {
-                        applyValueToSelectedCells('format', bulkQuestionType);
-                      } else {
-                        applyBulkValue('format', bulkQuestionType);
-                      }
-                    }}
-                    disabled={!bulkQuestionType}
+                    class="btn btn-primary btn-sm" 
+                    disabled={!bulkFormat || checkedBlocks.size === 0}
+                    on:click={applyBulkFormat}
                   >
                     변경
                   </button>
                 </div>
                 
-                <!-- 배점 일괄 입력 -->
                 <div class="flex items-center gap-2">
                   <span class="text-sm font-medium whitespace-nowrap">배점 :</span>
                   <input 
                     type="number" 
                     class="input input-bordered input-sm w-20" 
-                    placeholder="3"
-                    bind:value={bulkScore}
+                    placeholder="3" 
                     min="1"
-                  />
+                    bind:value={bulkScore}
+                  >
                   <button 
-                    class="btn btn-primary btn-sm"
-                    on:click={() => {
-                      if (selectedCells.size > 0) {
-                        applyValueToSelectedCells('score', bulkScore);
-                      } else {
-                        applyBulkValue('score', bulkScore);
-                      }
-                    }}
-                    disabled={!bulkScore}
+                    class="btn btn-primary btn-sm" 
+                    disabled={!bulkScore || checkedBlocks.size === 0}
+                    on:click={applyBulkScore}
                   >
                     변경
                   </button>
                 </div>
                 
-                <!-- 난이도 일괄 입력 -->
                 <div class="flex items-center gap-2">
                   <span class="text-sm font-medium whitespace-nowrap">난이도 :</span>
-                  <select class="select select-bordered select-sm w-32" bind:value={bulkDifficulty}>
+                  <select 
+                    class="select select-bordered select-sm w-32"
+                    bind:value={bulkDifficulty}
+                  >
                     <option value="">선택</option>
                     <option value="very_easy">매우 쉬움</option>
                     <option value="easy">쉬움</option>
@@ -1208,15 +1670,9 @@
                     <option value="very_hard">매우 어려움</option>
                   </select>
                   <button 
-                    class="btn btn-primary btn-sm"
-                    on:click={() => {
-                      if (selectedCells.size > 0) {
-                        applyValueToSelectedCells('difficulty', bulkDifficulty);
-                      } else {
-                        applyBulkValue('difficulty', bulkDifficulty);
-                      }
-                    }}
-                    disabled={!bulkDifficulty}
+                    class="btn btn-primary btn-sm" 
+                    disabled={!bulkDifficulty || checkedBlocks.size === 0}
+                    on:click={applyBulkDifficulty}
                   >
                     변경
                   </button>
@@ -1226,41 +1682,22 @@
           </div>
         </div>
         
-        <!-- 편집 가능한 표 -->
+        <!-- 표 형식 편집기 -->
         <div class="card bg-base-100 shadow">
           <div class="card-body p-0">
-            <div 
-              class="editable-table-container"
-              on:keydown={handleKeyDown}
-              tabindex="-1"
-            >
+            <div class="editable-table-container" tabindex="-1">
               <div class="overflow-x-auto" style="max-height: 600px;">
-                <table class="editable-table w-full" bind:this={tableElement}>
+                <table class="editable-table w-full">
                   <thead class="sticky top-0 bg-base-200">
                     <tr>
                       <th class="p-3 text-left border-b" style="width: 50px;">
                         <input 
-                          type="checkbox"
+                          type="checkbox" 
                           class="checkbox checkbox-sm"
-                          checked={selectedBlocks.length > 0 && selectedCells.size >= selectedBlocks.length * 5}
-                          on:change={(e) => {
-                            if (e.target.checked) {
-                              // 전체 선택 (정답과 연결 제외)
-                              selectedCells.clear();
-                              selectedBlocks.forEach((block, row) => {
-                                selectedCells.add(`${row},-1`); // 타입
-                                selectedCells.add(`${row},0`);  // 문항유형
-                                selectedCells.add(`${row},2`);  // 배점
-                                selectedCells.add(`${row},3`);  // 난이도
-                                selectedCells.add(`${row},5`);  // 커스텀 태그
-                              });
-                            } else {
-                              // 전체 해제
-                              selectedCells.clear();
-                            }
-                            selectedCells = new Set(selectedCells);
-                          }}
-                        />
+                          checked={allChecked}
+                          indeterminate={someChecked}
+                          on:change={toggleAllBlocks}
+                        >
                       </th>
                       <th class="p-3 text-left border-b" style="width: 100px;">타입</th>
                       <th class="p-3 text-left border-b" style="width: 120px;">문항 유형</th>
@@ -1283,183 +1720,81 @@
                   </thead>
                   <tbody>
                     {#each selectedBlocks as block, index}
-                      <tr class="hover:bg-base-100">
-                        <!-- 번호 -->
+                      <tr class="hover:bg-base-100 {index === selectedRowIndex ? 'bg-primary/10' : ''}">
                         <td class="p-3 border-b bg-base-100">
                           <div class="flex items-center gap-2">
                             <input 
-                              type="checkbox"
+                              type="checkbox" 
                               class="checkbox checkbox-sm"
-                              checked={selectedCells.has(`${index},-1`) || selectedCells.has(`${index},0`) || selectedCells.has(`${index},2`) || selectedCells.has(`${index},3`) || selectedCells.has(`${index},5`)}
-                              on:change={(e) => {
-                                if (e.target.checked) {
-                                  // 이 행의 편집 가능한 셀들 선택
-                                  selectedCells.add(`${index},-1`); // 타입
-                                  selectedCells.add(`${index},0`);  // 문항유형
-                                  selectedCells.add(`${index},2`);  // 배점
-                                  selectedCells.add(`${index},3`);  // 난이도
-                                  selectedCells.add(`${index},5`);  // 커스텀 태그
-                                } else {
-                                  // 이 행의 모든 셀 선택 해제
-                                  selectedCells.delete(`${index},-1`);
-                                  selectedCells.delete(`${index},0`);
-                                  selectedCells.delete(`${index},1`);
-                                  selectedCells.delete(`${index},2`);
-                                  selectedCells.delete(`${index},3`);
-                                  selectedCells.delete(`${index},4`);
-                                  selectedCells.delete(`${index},5`);
-                                }
-                                selectedCells = new Set(selectedCells);
-                              }}
-                            />
+                              checked={checkedBlocks.has(block.id)}
+                              on:change={() => toggleBlockCheck(block.id)}
+                            >
                             <span class="font-medium text-center text-sm">{index + 1}</span>
                           </div>
                         </td>
-                        
-                        <!-- 블록 타입 -->
-                        <td 
-                          class="p-3 border-b {isCellSelected(index, -1) ? 'bg-primary/20' : ''} {isCurrentCell(index, -1) ? 'ring-2 ring-primary' : ''}"
-                          on:click={(e) => handleCellClick(e, index, -1)}
-                        >
+                        <td class="p-3 border-b">
                           <select 
                             class="select select-bordered select-sm w-full bg-transparent"
-                            bind:value={block.type}
-                            data-cell="{index}--1"
-                            tabindex="-1"
-                            on:focus={(e) => {
-                              currentCell = { row: index, col: -1 };
-                              selectedCells.clear();
-                              selectedCells.add(`${index},-1`);
-                              selectedCells = new Set(selectedCells);
-                            }}
-                            on:keydown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.preventDefault();
-                                if (!e.target.classList.contains('dropdown-open')) {
-                                  // 드롭다운 열기 - 마우스 클릭과 동일하게
-                                  e.target.classList.add('dropdown-open');
-                                  const event = new MouseEvent('mousedown', {
-                                    view: window,
-                                    bubbles: true,
-                                    cancelable: true
-                                  });
-                                  e.target.dispatchEvent(event);
-                                } else {
-                                  // 다음 셀로 이동
-                                  e.target.classList.remove('dropdown-open');
-                                  moveToNextCell(index, -1);
-                                }
-                              }
-                            }}
+                            value={block.type}
+                            on:change={(e) => updateBlockType(block.id, e.target.value)}
+                            on:focus={() => { selectedRowIndex = index; }}
                           >
-                            <option value="question">문항</option>
-                            <option value="passage">지문</option>
-                            <option value="concept">개념</option>
-                            <option value="explanation">해설</option>
-                          </select>
-                        </td>
-                        
-                        <!-- 문항 유형 (문항일 때만) -->
-                        <td 
-                          class="p-3 border-b {isCellSelected(index, 0) ? 'bg-primary/20' : ''} {isCurrentCell(index, 0) ? 'ring-2 ring-primary' : ''}"
-                          on:click={(e) => handleCellClick(e, index, 0)}
-                        >
-                          <select 
-                            class="select select-bordered select-sm w-full bg-transparent"
-                            bind:value={block.format}
-                            data-cell="{index}-0"
-                            tabindex="-1"
-                            disabled={block.type !== 'question'}
-                            on:keydown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.preventDefault();
-                                if (!e.target.classList.contains('dropdown-open')) {
-                                  // 드롭다운 열기 - 마우스 클릭과 동일하게
-                                  e.target.classList.add('dropdown-open');
-                                  const event = new MouseEvent('mousedown', {
-                                    view: window,
-                                    bubbles: true,
-                                    cancelable: true
-                                  });
-                                  e.target.dispatchEvent(event);
-                                } else {
-                                  // 다음 셀로 이동
-                                  e.target.classList.remove('dropdown-open');
-                                  moveToNextCell(index, 0);
-                                }
-                              }
-                            }}
-                          >
-                            <option value="">선택</option>
-                            {#each questionFormats as format}
-                              <option value={format.value}>{format.label}</option>
+                            {#each blockTypes as type}
+                              <option value={type.value}>{type.label}</option>
                             {/each}
                           </select>
                         </td>
-                        
-                        <!-- 정답 -->
-                        <td 
-                          class="p-3 border-b {isCellSelected(index, 1) ? 'bg-primary/20' : ''} {isCurrentCell(index, 1) ? 'ring-2 ring-primary' : ''}"
-                          on:click={(e) => handleCellClick(e, index, 1)}
-                        >
-                          <input 
-                            type="text" 
-                            class="input input-bordered input-sm w-full bg-transparent"
-                            bind:value={block.answer}
-                            placeholder="정답 입력"
-                            data-cell="{index}-1"
-                            tabindex="-1"
-                            disabled={block.type !== 'question'}
-                          />
+                        <td class="p-3 border-b">
+                          {#if block.type === 'question'}
+                            <select 
+                              class="select select-bordered select-sm w-full bg-transparent"
+                              bind:value={block.format}
+                              on:focus={() => { selectedRowIndex = index; }}
+                            >
+                              <option value="">선택</option>
+                              <option value="multiple_choice">객관식</option>
+                              <option value="short_answer">단답형</option>
+                              <option value="essay">서술형</option>
+                              <option value="true_false">O/X</option>
+                            </select>
+                          {:else}
+                            <span class="text-xs text-base-content/50">-</span>
+                          {/if}
                         </td>
-                        
-                        <!-- 배점 -->
-                        <td 
-                          class="p-3 border-b {isCellSelected(index, 2) ? 'bg-primary/20' : ''} {isCurrentCell(index, 2) ? 'ring-2 ring-primary' : ''}"
-                          on:click={(e) => handleCellClick(e, index, 2)}
-                        >
-                          <input 
-                            type="number" 
-                            class="input input-bordered input-sm w-full bg-transparent"
-                            bind:value={block.score}
-                            placeholder="3"
-                            min="1"
-                            data-cell="{index}-2"
-                            tabindex="-1"
-                            disabled={block.type !== 'question'}
-                          />
+                        <td class="p-3 border-b">
+                          {#if block.type === 'question'}
+                            <input 
+                              type="text" 
+                              class="input input-bordered input-sm w-full bg-transparent"
+                              placeholder="정답 입력"
+                              bind:value={block.answer}
+                              on:focus={() => { selectedRowIndex = index; isEditingCell = true; }}
+                              on:blur={() => { isEditingCell = false; }}
+                            >
+                          {:else}
+                            <span class="text-xs text-base-content/50">-</span>
+                          {/if}
                         </td>
-                        
-                        <!-- 난이도 -->
-                        <td 
-                          class="p-3 border-b {isCellSelected(index, 3) ? 'bg-primary/20' : ''} {isCurrentCell(index, 3) ? 'ring-2 ring-primary' : ''}"
-                          on:click={(e) => handleCellClick(e, index, 3)}
-                        >
+                        <td class="p-3 border-b">
+                          {#if block.type === 'question'}
+                            <input 
+                              type="number" 
+                              class="input input-bordered input-sm w-full bg-transparent"
+                              placeholder="3"
+                              min="1"
+                              bind:value={block.score}
+                              on:focus={() => { selectedRowIndex = index; isEditingCell = true; }}
+                              on:blur={() => { isEditingCell = false; }}
+                            >
+                          {:else}
+                            <span class="text-xs text-base-content/50">-</span>
+                          {/if}
+                        </td>
+                        <td class="p-3 border-b">
                           <select 
                             class="select select-bordered select-sm w-full bg-transparent"
                             bind:value={block.difficulty}
-                            data-cell="{index}-3"
-                            tabindex="-1"
-                            disabled={block.type !== 'question'}
-                            on:keydown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.preventDefault();
-                                if (!e.target.classList.contains('dropdown-open')) {
-                                  // 드롭다운 열기 - 마우스 클릭과 동일하게
-                                  e.target.classList.add('dropdown-open');
-                                  const event = new MouseEvent('mousedown', {
-                                    view: window,
-                                    bubbles: true,
-                                    cancelable: true
-                                  });
-                                  e.target.dispatchEvent(event);
-                                } else {
-                                  // 다음 셀로 이동
-                                  e.target.classList.remove('dropdown-open');
-                                  moveToNextCell(index, 3);
-                                }
-                              }
-                            }}
+                            on:focus={() => { selectedRowIndex = index; }}
                           >
                             <option value="">선택</option>
                             <option value="very_easy">매우 쉬움</option>
@@ -1469,68 +1804,81 @@
                             <option value="very_hard">매우 어려움</option>
                           </select>
                         </td>
-                        
-                        <!-- 연결 (지문/해설일 때) -->
-                        <td 
-                          class="p-3 border-b {isCellSelected(index, 4) ? 'bg-primary/20' : ''} {isCurrentCell(index, 4) ? 'ring-2 ring-primary' : ''}"
-                          on:click={(e) => handleCellClick(e, index, 4)}
-                        >
+                        <td class="p-3 border-b">
                           {#if block.type === 'passage' || block.type === 'explanation'}
-                            <input 
-                              type="text" 
-                              class="input input-bordered input-sm w-full bg-transparent"
-                              bind:value={block.linkedQuestionsText}
-                              placeholder="문항 번호 (예: 1,2,3)"
-                              data-cell="{index}-4"
-                              tabindex="-1"
-                              on:blur={() => {
-                                // 입력된 문항 번호를 배열로 변환
-                                if (block.linkedQuestionsText) {
-                                  block.linkedQuestions = block.linkedQuestionsText
-                                    .split(',')
-                                    .map(n => parseInt(n.trim()))
-                                    .filter(n => !isNaN(n) && n > 0 && n <= selectedBlocks.length);
-                                }
-                              }}
-                            />
+                            <div class="dropdown">
+                              <label tabindex="0" class="btn btn-xs btn-ghost flex items-center gap-1">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                                  <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"></path>
+                                </svg>
+                                {#if block.linkedBlocks && block.linkedBlocks.length > 0}
+                                  <span class="text-xs">
+                                    {block.linkedBlocks.map(id => selectedBlocks.findIndex(b => b.id === id) + 1).join(', ')}
+                                  </span>
+                                {:else}
+                                  <span class="text-xs">연결</span>
+                                {/if}
+                              </label>
+                              <ul tabindex="0" class="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 max-h-60 overflow-y-auto z-50">
+                                {#each selectedBlocks.filter(b => b.type === 'question') as question, qIndex}
+                                  <li>
+                                    <label class="cursor-pointer label p-2">
+                                      <input 
+                                        type="checkbox" 
+                                        class="checkbox checkbox-xs"
+                                        checked={block.linkedBlocks && block.linkedBlocks.includes(question.id)}
+                                        on:change={() => toggleLinkBlock(block, question.id)}
+                                      />
+                                      <span class="label-text text-xs flex-1">{question.title}</span>
+                                    </label>
+                                  </li>
+                                {/each}
+                                {#if selectedBlocks.filter(b => b.type === 'question').length === 0}
+                                  <li class="text-xs text-base-content/50 p-2">문제 블록이 없습니다</li>
+                                {/if}
+                              </ul>
+                            </div>
+                          {:else if block.type === 'question' && block.linkedBlocks && block.linkedBlocks.length > 0}
+                            <div class="flex flex-wrap gap-1">
+                              {#each block.linkedBlocks as linkedId}
+                                {@const linkedBlock = selectedBlocks.find(b => b.id === linkedId)}
+                                {#if linkedBlock}
+                                  <span class="badge badge-sm badge-{linkedBlock.type === 'passage' ? 'secondary' : 'accent'}">
+                                    {linkedBlock.title}
+                                  </span>
+                                {/if}
+                              {/each}
+                            </div>
                           {:else}
                             <span class="text-xs text-base-content/50">-</span>
                           {/if}
                         </td>
-                        
-                        <!-- 커스텀 태그 -->
-                        <td 
-                          class="p-3 border-b {isCellSelected(index, 5) ? 'bg-primary/20' : ''} {isCurrentCell(index, 5) ? 'ring-2 ring-primary' : ''}"
-                          on:click={(e) => handleCellClick(e, index, 5)}
-                        >
+                        <td class="p-3 border-b">
                           <div class="flex flex-wrap gap-1">
-                            {#each block.customTags as tag}
-                              <div class="badge badge-sm badge-outline gap-1">
-                                {tag}
-                                <button 
-                                  class="text-xs hover:text-error"
-                                  on:click|stopPropagation={() => {
-                                    block.customTags = block.customTags.filter(t => t !== tag);
-                                  }}
-                                >
-                                  ×
-                                </button>
-                              </div>
-                            {/each}
+                            {#if block.customTags && block.customTags.length > 0}
+                              {#each block.customTags as tag}
+                                <span class="badge badge-sm badge-ghost">
+                                  {tag}
+                                  <button 
+                                    class="ml-1 text-xs"
+                                    on:click={() => removeCustomTag(block, tag)}
+                                  >
+                                    ×
+                                  </button>
+                                </span>
+                              {/each}
+                            {/if}
                             <input 
                               type="text" 
                               class="input input-xs input-ghost w-20"
                               placeholder="+태그"
-                              on:keydown={(e) => {
-                                if (e.key === 'Enter' && e.target.value.trim()) {
-                                  e.preventDefault();
-                                  block.customTags = [...block.customTags, e.target.value.trim()];
+                              on:keypress={(e) => {
+                                if (e.key === 'Enter' && e.target.value) {
+                                  addCustomTag(block, e.target.value);
                                   e.target.value = '';
                                 }
                               }}
-                              data-cell="{index}-5"
-                              tabindex="-1"
-                            />
+                            >
                           </div>
                         </td>
                       </tr>
@@ -1540,16 +1888,12 @@
               </div>
             </div>
             
-            <!-- 표 하단 요약 정보 -->
             <div class="p-4 border-t bg-base-200">
               <div class="flex items-center justify-between text-sm">
                 <div class="flex items-center gap-4">
                   <span>총 {selectedBlocks.length}개 블록</span>
                   <span>문항: {selectedBlocks.filter(b => b.type === 'question').length}개</span>
-                  <span>필수 입력 완료: {selectedBlocks.filter(b => b.type === 'question' && b.format && b.answer && b.score).length}/{selectedBlocks.filter(b => b.type === 'question').length}</span>
-                  {#if selectedCells.size > 0}
-                    <span class="text-primary font-medium">선택된 셀: {selectedCells.size}개</span>
-                  {/if}
+                  <span>필수 입력 완료: {getCompletedCount()}/{selectedBlocks.filter(b => b.type === 'question').length}</span>
                 </div>
                 <div class="text-base-content/70">
                   * 표시는 필수 입력 항목 | 화살표/Tab/Enter로 이동 | Shift/Ctrl로 다중선택
@@ -1564,38 +1908,76 @@
 </div>
 
 <style>
+  /* 블록 아이템 스타일 */
   .rect-block-item {
-    @apply border border-base-300 rounded-lg p-3 hover:shadow-md transition-all duration-200 bg-base-100;
+    @apply bg-base-100 border border-base-300 rounded-lg p-3 transition-all;
   }
   
-  .rect-checkbox {
-    @apply flex items-center;
+  .rect-block-item:hover {
+    @apply shadow-md;
+    border-color: rgba(87, 13, 248, 0.5);
   }
   
   .rect-drag-icon {
-    @apply flex items-center justify-center;
+    @apply transition-opacity opacity-50;
   }
   
-  .rc-segmented {
-    @apply flex items-center;
+  .rect-drag-icon:hover {
+    @apply opacity-100;
+  }
+
+  /* 드래그 앤 드롭 스타일 */
+  .rect-block-item.drag-over {
+    @apply border-primary border-2;
+    background-color: rgba(87, 13, 248, 0.05);
+  }
+
+  .rect-block-item.dragging {
+    @apply opacity-50;
+  }
+
+  /* 추가 스타일 */
+  .card {
+    transition: all 0.3s ease;
+  }
+  
+  .card:hover {
+    transform: translateY(-2px);
+  }
+  
+  .cursor-crosshair {
+    cursor: crosshair !important;
+  }
+  
+  .pointer-events-auto {
+    pointer-events: auto;
+  }
+  
+  /* 편집 가능한 테이블 스타일 */
+  .editable-table-container {
+    position: relative;
   }
   
   .editable-table {
-    @apply text-sm;
+    border-collapse: collapse;
   }
   
+  .editable-table th,
   .editable-table td {
-    @apply cursor-cell;
+    position: relative;
   }
   
-  .editable-table-container:focus {
-    @apply outline-none;
+  .editable-table tbody td {
+    transition: background-color 0.1s ease;
   }
   
-  .line-clamp-2 {
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
+  .editable-table tbody td.focus-cell {
+    background-color: var(--primary) !important;
+    opacity: 0.1;
+  }
+  
+  .editable-table tbody td.selected-cell {
+    outline: 2px solid var(--primary);
+    outline-offset: -2px;
   }
 </style>

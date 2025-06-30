@@ -5,7 +5,7 @@ import { supabase } from '$lib/supabase.js';
 export const blocks = writable([]);
 export const loading = writable(false);
 
-// 더미 데이터 (Supabase 미설정 시 사용)
+// 더미 데이터 제거 (더 이상 사용하지 않음)
 const dummyBlocks = [
   {
     id: '1',
@@ -19,6 +19,10 @@ const dummyBlocks = [
     tags: ['이차함수', '그래프'],
     custom_tags: ['중요', '시험출제'],
     page_number: 15,
+    score: 5,
+    chapter: '3단원. 이차함수',
+    linked_blocks: [],
+    image_data: null,
     created_at: '2024-01-15T10:00:00Z',
     user_id: 'demo-user'
   },
@@ -80,15 +84,6 @@ export async function fetchBlocks(userId, materialId = null) {
   loading.set(true);
   
   try {
-    if (!supabase) {
-      // 더미 데이터 사용
-      let filtered = dummyBlocks;
-      if (materialId) {
-        filtered = dummyBlocks.filter(b => b.material_id === materialId);
-      }
-      blocks.set(filtered);
-      return { data: filtered, error: null };
-    }
     
     // 실제 Supabase 조회
     let query = supabase
@@ -124,20 +119,6 @@ export async function addBlock(userId, blockData) {
   loading.set(true);
   
   try {
-    if (!supabase) {
-      // 더미 데이터에 추가
-      const newBlock = {
-        id: String(Date.now()),
-        user_id: userId,
-        created_at: new Date().toISOString(),
-        ...blockData
-      };
-      
-      dummyBlocks.push(newBlock);
-      blocks.update(items => [newBlock, ...items]);
-      
-      return { data: newBlock, error: null };
-    }
     
     // 실제 Supabase 추가
     const { data, error } = await supabase
@@ -171,15 +152,6 @@ export async function deleteBlock(blockId) {
   loading.set(true);
   
   try {
-    if (!supabase) {
-      // 더미 데이터에서 삭제
-      const index = dummyBlocks.findIndex(b => b.id === blockId);
-      if (index > -1) {
-        dummyBlocks.splice(index, 1);
-      }
-      blocks.update(items => items.filter(item => item.id !== blockId));
-      return { error: null };
-    }
     
     // 실제 Supabase 삭제
     const { error } = await supabase
@@ -204,6 +176,35 @@ export async function deleteBlock(blockId) {
   }
 }
 
+// 블록 일괄 삭제
+export async function deleteBlocks(blockIds) {
+  loading.set(true);
+  
+  try {
+    
+    // 실제 Supabase 일괄 삭제
+    const { error } = await supabase
+      .from('blocks')
+      .delete()
+      .in('id', blockIds);
+    
+    if (error) {
+      console.error('Blocks delete error:', error);
+      return { error };
+    }
+    
+    // 스토어 업데이트
+    blocks.update(items => items.filter(item => !blockIds.includes(item.id)));
+    return { error: null };
+    
+  } catch (error) {
+    console.error('Blocks delete error:', error);
+    return { error };
+  } finally {
+    loading.set(false);
+  }
+}
+
 // 난이도 레벨 매핑
 export function getDifficultyLabel(difficulty) {
   const levels = {
@@ -218,11 +219,9 @@ export function getDifficultyLabel(difficulty) {
 export function getBlockTypeLabel(type) {
   const types = {
     'question': '문항',
-    'passage': '지문',
     'concept': '개념',
-    'formula': '공식',
-    'example': '예제',
-    'note': '참고'
+    'passage': '지문',
+    'explanation': '해설'
   };
   return types[type] || type;
 }
@@ -252,11 +251,9 @@ export function getDifficultyBadgeClass(difficulty) {
 export function getBlockTypeIcon(type) {
   const icons = {
     'question': '❓',
-    'passage': '📖',
     'concept': '💡',
-    'formula': '🔢',
-    'example': '📊',
-    'note': '📌'
+    'passage': '📜',
+    'explanation': '📝'
   };
   return icons[type] || '📄';
 }
@@ -277,17 +274,6 @@ export async function updateBlock(blockId, updates) {
   loading.set(true);
   
   try {
-    if (!supabase) {
-      // 더미 데이터 수정
-      const index = dummyBlocks.findIndex(b => b.id === blockId);
-      if (index > -1) {
-        dummyBlocks[index] = { ...dummyBlocks[index], ...updates };
-        blocks.update(items => items.map(item => 
-          item.id === blockId ? { ...item, ...updates } : item
-        ));
-      }
-      return { error: null };
-    }
     
     // 실제 Supabase 수정
     const { error } = await supabase
@@ -323,4 +309,137 @@ export function getAllCustomTags(blocksArray) {
     }
   });
   return Array.from(tagsSet).sort();
+}
+
+// 모든 고유 단원 가져오기
+export function getAllChapters(blocksArray) {
+  const chaptersSet = new Set();
+  blocksArray.forEach(block => {
+    if (block.chapter && block.chapter.trim()) {
+      chaptersSet.add(block.chapter);
+    }
+  });
+  return Array.from(chaptersSet).sort();
+}
+
+// 컬렉션 관리
+export const collection = writable([]);
+
+// 컬렉션에 블록 추가
+export function addToCollection(block) {
+  collection.update(items => {
+    // 중복 체크
+    if (!items.find(item => item.id === block.id)) {
+      return [...items, block];
+    }
+    return items;
+  });
+}
+
+// 컬렉션에서 블록 제거
+export function removeFromCollection(blockId) {
+  collection.update(items => items.filter(item => item.id !== blockId));
+}
+
+// 컬렉션 비우기
+export function clearCollection() {
+  collection.set([]);
+}
+
+// 컬렉션에서 블록이 있는지 확인
+export function isInCollection(blockId, collectionItems) {
+  return collectionItems.some(item => item.id === blockId);
+}
+
+// 이미지 썸네일 생성 유틸리티
+export function createThumbnail(imageData, maxWidth = 150, maxHeight = 150) {
+  if (!imageData) return null;
+  
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      
+      // 비율 유지하며 리사이즈
+      let width = img.width;
+      let height = img.height;
+      
+      if (width > height) {
+        if (width > maxWidth) {
+          height = (height * maxWidth) / width;
+          width = maxWidth;
+        }
+      } else {
+        if (height > maxHeight) {
+          width = (width * maxHeight) / height;
+          height = maxHeight;
+        }
+      }
+      
+      canvas.width = width;
+      canvas.height = height;
+      
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    
+    img.onerror = () => resolve(null);
+    img.src = imageData;
+  });
+}
+
+// 연결된 블록(지문, 해설) 조회
+export async function fetchLinkedBlocks(blockId) {
+  if (!supabase) {
+    // 더미 데이터 반환
+    return { data: [], error: null };
+  }
+  
+  try {
+    const { data, error } = await supabase
+      .from('linked_blocks')
+      .select('*')
+      .eq('parent_block_id', blockId)
+      .order('created_at', { ascending: true });
+    
+    if (error) {
+      console.error('Linked blocks fetch error:', error);
+      return { data: null, error };
+    }
+    
+    return { data, error: null };
+  } catch (error) {
+    console.error('Linked blocks fetch error:', error);
+    return { data: null, error };
+  }
+}
+
+// 연결된 블록 추가
+export async function addLinkedBlock(userId, parentBlockId, linkedBlockData) {
+  if (!supabase) {
+    return { data: null, error: 'Supabase not initialized' };
+  }
+  
+  try {
+    const { data, error } = await supabase
+      .from('linked_blocks')
+      .insert({
+        user_id: userId,
+        parent_block_id: parentBlockId,
+        ...linkedBlockData
+      })
+      .select()
+      .single();
+    
+    if (error) {
+      console.error('Linked block add error:', error);
+      return { data: null, error };
+    }
+    
+    return { data, error: null };
+  } catch (error) {
+    console.error('Linked block add error:', error);
+    return { data: null, error };
+  }
 }
