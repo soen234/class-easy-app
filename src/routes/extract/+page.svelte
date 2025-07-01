@@ -4,8 +4,8 @@
   import { page } from '$app/stores';
   import { user } from '$lib/stores/auth.js';
   import { materials, fetchMaterials, updateMaterial, formatFileSize, getFileTypeIcon } from '$lib/stores/materials.js';
-  import { addBlock } from '$lib/stores/blocks.js';
-  import { goto } from '$app/navigation';
+  import { addBlock, blocks, fetchBlocks } from '$lib/stores/blocks.js';
+  import { goto, pushState, replaceState } from '$app/navigation';
   import { getFile, migrateFromLocalStorage } from '$lib/utils/fileStorage.js';
   import { supabase } from '$lib/supabase.js';
   
@@ -26,6 +26,11 @@
   }
   let extractionStep = 'select-material';
   
+  // 임시 저장 관련 변수
+  let autoSaveInterval = null;
+  let lastSavedTime = null;
+  let isSaving = false;
+  
   // 브라우저 히스토리 관리
   function updateHistory() {
     if (browser) {
@@ -34,7 +39,7 @@
       if (selectedMaterial) {
         url.searchParams.set('materialId', selectedMaterial.id);
       }
-      window.history.pushState({ step: extractionStep }, '', url);
+      pushState(url.toString(), { step: extractionStep });
     }
   }
   
@@ -173,6 +178,8 @@
             extractionStep = 'extract-blocks';
           }
           await loadFile();
+          await loadExistingBlocks();
+          await loadTempSavedData();
         }
       }
     }
@@ -182,9 +189,13 @@
       window.addEventListener('keydown', handleKeyDown);
       window.addEventListener('popstate', handlePopState);
       
+      // 자동 저장 시작 (30초마다)
+      startAutoSave();
+      
       return () => {
         window.removeEventListener('keydown', handleKeyDown);
         window.removeEventListener('popstate', handlePopState);
+        stopAutoSave();
       };
     }
   });
@@ -199,6 +210,68 @@
     
     // 파일 로드
     await loadFile();
+    
+    // 기존 추출된 블록 로드
+    await loadExistingBlocks();
+    
+    // 임시 저장 데이터 확인
+    await loadTempSavedData();
+  }
+  
+  // 기존 추출된 블록 로드
+  async function loadExistingBlocks() {
+    if (!selectedMaterial || !$user?.id) return;
+    
+    try {
+      // Supabase에서 해당 자료의 블록 가져오기
+      await fetchBlocks($user.id);
+      
+      // 현재 자료의 블록만 필터링
+      const materialBlocks = $blocks.filter(block => block.material_id === selectedMaterial.id);
+      
+      if (materialBlocks.length > 0) {
+        // 블록 형식 변환
+        selectedBlocks = materialBlocks.map(block => {
+          // localStorage에서 selection 정보 가져오기
+          const savedSelections = JSON.parse(localStorage.getItem(`block-selections-${selectedMaterial.id}`) || '{}');
+          const selection = savedSelections[block.id] || { x: 0, y: 0, width: 100, height: 100 };
+          
+          return {
+            id: block.id,
+            type: block.type,
+            title: block.title || `${block.type} ${block.page_number}`,
+            page: block.page_number || 1,
+            selection: selection,
+            content: block.content || '',
+            format: block.subtype || 'multiple_choice',
+            answer: block.correct_answer || '',
+            tags: block.tags || [],
+            linkedBlocks: block.linked_blocks || [],
+            extractedText: block.content || '',
+            imageData: block.image_data || null,
+            score: block.score || 3,
+            difficulty: block.difficulty || '',
+            customTags: block.custom_tags || [],
+            isExisting: true // 기존 블록 표시
+          };
+        });
+        
+        // 카운터 업데이트
+        blockCounters = {
+          question: materialBlocks.filter(b => b.type === 'question').length,
+          passage: materialBlocks.filter(b => b.type === 'passage').length,
+          concept: materialBlocks.filter(b => b.type === 'concept').length,
+          explanation: materialBlocks.filter(b => b.type === 'explanation').length
+        };
+        
+        // 캔버스에 그리기
+        setTimeout(() => {
+          drawExistingBlocks();
+        }, 500);
+      }
+    } catch (error) {
+      console.error('기존 블록 로드 오류:', error);
+    }
   }
   
   // 파일 로드 함수
@@ -421,7 +494,7 @@
     // 리사이즈 핸들 클릭 검사 (모든 블록 대상)
     const scaleRatio = currentScale / baseScale;
     for (const block of selectedBlocks) {
-      if (block.page === currentPage) {
+      if (block.page === currentPage && block.selection) {
         const scaledX = block.selection.x * scaleRatio;
         const scaledY = block.selection.y * scaleRatio;
         const scaledWidth = block.selection.width * scaleRatio;
@@ -540,6 +613,8 @@
       resizeHandle = null;
       resizeStartPos = null;
       originalSelection = null;
+      // 리사이즈 후 selection 저장
+      saveSelections();
       return;
     }
     
@@ -567,7 +642,7 @@
     let newHoveredBlockId = null;
     
     for (const block of selectedBlocks) {
-      if (block.page === currentPage) {
+      if (block.page === currentPage && block.selection) {
         const scaledX = block.selection.x * scaleRatio;
         const scaledY = block.selection.y * scaleRatio;
         const scaledWidth = block.selection.width * scaleRatio;
@@ -606,6 +681,80 @@
     if (!cursorSet) {
       overlayCanvas.style.cursor = 'crosshair';
     }
+  }
+  
+  // 자동 저장 기능
+  function startAutoSave() {
+    autoSaveInterval = setInterval(() => {
+      if (selectedBlocks.length > 0 && selectedMaterial) {
+        autoSaveBlocks();
+      }
+    }, 30000); // 30초마다
+  }
+  
+  function stopAutoSave() {
+    if (autoSaveInterval) {
+      clearInterval(autoSaveInterval);
+      autoSaveInterval = null;
+    }
+  }
+  
+  async function autoSaveBlocks() {
+    if (isSaving || !selectedMaterial) return;
+    
+    try {
+      isSaving = true;
+      const tempData = {
+        materialId: selectedMaterial.id,
+        blocks: selectedBlocks,
+        timestamp: new Date().toISOString()
+      };
+      
+      // localStorage에 임시 저장
+      localStorage.setItem(`extract-temp-${selectedMaterial.id}`, JSON.stringify(tempData));
+      lastSavedTime = new Date();
+      
+      console.log('임시 저장 완료:', lastSavedTime);
+    } catch (error) {
+      console.error('임시 저장 오류:', error);
+    } finally {
+      isSaving = false;
+    }
+  }
+  
+  // 임시 저장된 데이터 로드
+  async function loadTempSavedData() {
+    if (!selectedMaterial) return;
+    
+    try {
+      const tempData = localStorage.getItem(`extract-temp-${selectedMaterial.id}`);
+      if (tempData) {
+        const parsed = JSON.parse(tempData);
+        if (parsed.blocks && parsed.blocks.length > 0) {
+          const shouldLoad = confirm('임시 저장된 데이터가 있습니다. 불러오시겠습니까?');
+          if (shouldLoad) {
+            selectedBlocks = parsed.blocks;
+            drawExistingBlocks();
+          }
+        }
+      }
+    } catch (error) {
+      console.error('임시 데이터 로드 오류:', error);
+    }
+  }
+  
+  // selection 정보 저장
+  function saveSelections() {
+    if (!selectedMaterial) return;
+    
+    const selections = {};
+    selectedBlocks.forEach(block => {
+      if (block.selection) {
+        selections[block.id] = block.selection;
+      }
+    });
+    
+    localStorage.setItem(`block-selections-${selectedMaterial.id}`, JSON.stringify(selections));
   }
   
   function createBlockFromSelection() {
@@ -655,6 +804,12 @@
     setTimeout(() => {
       drawExistingBlocks();
     }, 50);
+    
+    // selection 정보 저장
+    saveSelections();
+    
+    // 자동 저장
+    autoSaveBlocks();
   }
   
   // 블록 타입 변경 시 제목 업데이트
@@ -1041,7 +1196,36 @@
         localStorage.setItem('local-blocks', JSON.stringify(allBlocks));
       } else {
         // Supabase에 저장 - blocks 테이블 사용
-        const blocksToInsert = selectedBlocks.map(block => ({
+        // 기존 블록은 업데이트, 새 블록은 삽입
+        const existingBlocks = selectedBlocks.filter(block => block.isExisting);
+        const newBlocks = selectedBlocks.filter(block => !block.isExisting);
+        
+        // 기존 블록 업데이트
+        for (const block of existingBlocks) {
+          const { error } = await supabase
+            .from('blocks')
+            .update({
+              title: block.title,
+              type: block.type,
+              subtype: block.format || null,
+              content: block.extractedText || block.content || '',
+              correct_answer: block.answer || '',
+              difficulty: block.difficulty || 'medium',
+              tags: block.tags || [],
+              custom_tags: block.customTags || [],
+              score: block.score || 0,
+              linked_blocks: block.linkedBlocks || []
+            })
+            .eq('id', block.id);
+            
+          if (error) {
+            console.error('블록 업데이트 오류:', error);
+          }
+        }
+        
+        // 새 블록 삽입
+        if (newBlocks.length > 0) {
+          const blocksToInsert = newBlocks.map(block => ({
           user_id: $user.id,
           material_id: selectedMaterial.id,
           title: block.title || `${block.type} ${block.id}`, // title 필드 추가
@@ -1073,7 +1257,8 @@
           return;
         }
         
-        console.log('Blocks inserted successfully:', data);
+          console.log('Blocks inserted successfully:', data);
+        }
       }
       
       // materials store 업데이트
@@ -1085,6 +1270,13 @@
       };
       
       await updateMaterial(selectedMaterial.id, updates);
+      
+      // 임시 저장 데이터 삭제
+      if (selectedMaterial) {
+        localStorage.removeItem(`extract-temp-${selectedMaterial.id}`);
+        // selection 정보도 저장 (다음에 다시 사용할 수 있도록)
+        saveSelections();
+      }
       
       alert(`${selectedBlocks.length}개의 블록이 추출되었습니다!`);
       
@@ -1462,6 +1654,21 @@
             <div class="flex items-center gap-2 text-sm text-base-content/70">
               <span>{selectedMaterial.title}</span>
               <span class="text-primary">{currentPage}/{totalPages} 페이지</span>
+              
+              <!-- 자동 저장 상태 표시 -->
+              {#if isSaving}
+                <div class="flex items-center gap-1 text-warning">
+                  <span class="loading loading-spinner loading-xs"></span>
+                  <span>저장 중...</span>
+                </div>
+              {:else if lastSavedTime}
+                <div class="flex items-center gap-1 text-success">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span>자동 저장됨</span>
+                </div>
+              {/if}
             </div>
           {/if}
         </div>
@@ -1605,6 +1812,15 @@
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                    </svg>
+                  </button>
+                  <button 
+                    class="btn btn-ghost btn-sm"
+                    on:click={() => renderPage(currentPage)}
+                    title="캔버스 새로고침"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                     </svg>
                   </button>
                 </div>
