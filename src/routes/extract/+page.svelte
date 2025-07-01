@@ -48,6 +48,7 @@
   let resizeHandle = null; // 'nw', 'ne', 'sw', 'se'
   let resizeStartPos = null;
   let originalSelection = null;
+  let hoveredBlockId = null;
   
   // 줌 관련 변수
   let zoomLevel = 1;
@@ -71,13 +72,19 @@
     });
   }
   
-  // 블록 타입
+  // 블록 타입과 색상 정의 (통일된 색상 스킴)
   const blockTypes = [
-    { value: 'question', label: '문제', icon: '❓', color: 'btn-primary' },
-    { value: 'passage', label: '지문', icon: '📜', color: 'btn-secondary' },
-    { value: 'concept', label: '개념', icon: '💡', color: 'btn-accent' },
-    { value: 'explanation', label: '해설', icon: '📝', color: 'btn-info' }
+    { value: 'question', label: '문제', icon: '❓', color: 'btn-primary', hexColor: '#3B82F6' },    // Blue
+    { value: 'passage', label: '지문', icon: '📜', color: 'btn-warning', hexColor: '#F59E0B' },    // Amber
+    { value: 'concept', label: '개념', icon: '💡', color: 'btn-secondary', hexColor: '#8B5CF6' },  // Violet
+    { value: 'explanation', label: '해설', icon: '📝', color: 'btn-success', hexColor: '#10B981' }  // Emerald
   ];
+  
+  // 블록 타입별 색상 매핑
+  const blockColors = blockTypes.reduce((acc, type) => {
+    acc[type.value] = type.hexColor;
+    return acc;
+  }, {});
   
   // 블록 타입별 카운터
   let blockCounters = {
@@ -370,10 +377,10 @@
     const mouseX = (e.clientX - rect.left) * scaleX;
     const mouseY = (e.clientY - rect.top) * scaleY;
     
-    // 리사이즈 핸들 클릭 검사
+    // 리사이즈 핸들 클릭 검사 (모든 블록 대상)
     const scaleRatio = currentScale / baseScale;
     for (const block of selectedBlocks) {
-      if (block.page === currentPage && checkedBlocks.has(block.id)) {
+      if (block.page === currentPage) {
         const scaledX = block.selection.x * scaleRatio;
         const scaledY = block.selection.y * scaleRatio;
         const scaledWidth = block.selection.width * scaleRatio;
@@ -516,9 +523,10 @@
     
     const scaleRatio = currentScale / baseScale;
     let cursorSet = false;
+    let newHoveredBlockId = null;
     
     for (const block of selectedBlocks) {
-      if (block.page === currentPage && checkedBlocks.has(block.id)) {
+      if (block.page === currentPage) {
         const scaledX = block.selection.x * scaleRatio;
         const scaledY = block.selection.y * scaleRatio;
         const scaledWidth = block.selection.width * scaleRatio;
@@ -536,12 +544,19 @@
           if (x >= handle.x && x <= handle.x + handleSize &&
               y >= handle.y && y <= handle.y + handleSize) {
             overlayCanvas.style.cursor = handle.cursor;
+            newHoveredBlockId = block.id;
             cursorSet = true;
             break;
           }
         }
         if (cursorSet) break;
       }
+    }
+    
+    // 호버 상태 업데이트
+    if (hoveredBlockId !== newHoveredBlockId) {
+      hoveredBlockId = newHoveredBlockId;
+      drawExistingBlocks();
     }
     
     if (!cursorSet) {
@@ -666,6 +681,9 @@
     // 오버레이 캔버스 클리어
     overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
     
+    // 기존 블록들 먼저 그리기
+    drawExistingBlocks();
+    
     // 선택 영역 그리기
     if (selectionRect && selectionStart) {
       overlayCtx.save();
@@ -718,14 +736,7 @@
         overlayCtx.save();
         
         // 블록 타입에 따른 색상 설정
-        const colors = {
-          question: '#3B82F6',    // 파란색
-          passage: '#8B5CF6',     // 보라색
-          concept: '#F59E0B',     // 주황색
-          explanation: '#10B981'  // 초록색
-        };
-        
-        const color = colors[block.type] || '#3B82F6';
+        const color = blockColors[block.type] || '#3B82F6';
         
         // 스케일된 좌표 계산
         const scaledX = block.selection.x * scaleRatio;
@@ -750,8 +761,8 @@
         overlayCtx.font = 'bold 12px sans-serif';
         overlayCtx.fillText(block.title, scaledX + 5, scaledY - 8);
         
-        // 리사이즈 핸들 그리기 (체크된 블록만)
-        if (checkedBlocks.has(block.id)) {
+        // 호버 시 리사이즈 핸들 그리기
+        if (hoveredBlockId === block.id || checkedBlocks.has(block.id)) {
           const handleSize = 8;
           const handles = [
             { x: scaledX, y: scaledY, type: 'nw' },
@@ -1727,7 +1738,7 @@
                               {#each linkedPassages as linked}
                                 <div class="tooltip" data-tip={linked.title}>
                                   <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 24 24" 
-                                    class="text-{linked.type === 'passage' ? 'secondary' : 'accent'}">
+                                    class="text-{linked.type === 'passage' ? 'warning' : linked.type === 'concept' ? 'secondary' : linked.type === 'explanation' ? 'success' : 'primary'}">
                                     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/>
                                   </svg>
                                 </div>
@@ -2164,7 +2175,7 @@
                               {#each block.linkedBlocks as linkedId}
                                 {@const linkedBlock = selectedBlocks.find(b => b.id === linkedId)}
                                 {#if linkedBlock}
-                                  <span class="badge badge-sm badge-{linkedBlock.type === 'passage' ? 'secondary' : 'accent'}">
+                                  <span class="badge badge-sm badge-{linkedBlock.type === 'question' ? 'primary' : linkedBlock.type === 'passage' ? 'warning' : linkedBlock.type === 'concept' ? 'secondary' : 'success'}">
                                     {linkedBlock.title}
                                   </span>
                                 {/if}
