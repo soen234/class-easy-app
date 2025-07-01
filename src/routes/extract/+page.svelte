@@ -42,6 +42,13 @@
   let selectionRect = null;
   let canvasContainer;
   
+  // 리사이즈 관련 변수
+  let isResizing = false;
+  let resizingBlock = null;
+  let resizeHandle = null; // 'nw', 'ne', 'sw', 'se'
+  let resizeStartPos = null;
+  let originalSelection = null;
+  
   // 줌 관련 변수
   let zoomLevel = 1;
   const zoomStep = 0.1;
@@ -360,9 +367,45 @@
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
     
+    const mouseX = (e.clientX - rect.left) * scaleX;
+    const mouseY = (e.clientY - rect.top) * scaleY;
+    
+    // 리사이즈 핸들 클릭 검사
+    const scaleRatio = currentScale / baseScale;
+    for (const block of selectedBlocks) {
+      if (block.page === currentPage && checkedBlocks.has(block.id)) {
+        const scaledX = block.selection.x * scaleRatio;
+        const scaledY = block.selection.y * scaleRatio;
+        const scaledWidth = block.selection.width * scaleRatio;
+        const scaledHeight = block.selection.height * scaleRatio;
+        
+        const handleSize = 8;
+        const handles = [
+          { x: scaledX, y: scaledY, type: 'nw' },
+          { x: scaledX + scaledWidth - handleSize, y: scaledY, type: 'ne' },
+          { x: scaledX, y: scaledY + scaledHeight - handleSize, type: 'sw' },
+          { x: scaledX + scaledWidth - handleSize, y: scaledY + scaledHeight - handleSize, type: 'se' }
+        ];
+        
+        for (const handle of handles) {
+          if (mouseX >= handle.x && mouseX <= handle.x + handleSize &&
+              mouseY >= handle.y && mouseY <= handle.y + handleSize) {
+            isResizing = true;
+            resizingBlock = block;
+            resizeHandle = handle.type;
+            resizeStartPos = { x: mouseX, y: mouseY };
+            originalSelection = { ...block.selection };
+            e.preventDefault();
+            return;
+          }
+        }
+      }
+    }
+    
+    // 리사이즈가 아니면 새 선택 시작
     selectionStart = {
-      x: (e.clientX - rect.left) * scaleX,
-      y: (e.clientY - rect.top) * scaleY
+      x: mouseX,
+      y: mouseY
     };
     
     selectionRect = {
@@ -374,7 +417,7 @@
   }
   
   function handleMouseMove(e) {
-    if (extractionMode !== 'manual' || !selectionStart || !canvas) return;
+    if (extractionMode !== 'manual' || !canvas) return;
     
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
@@ -383,23 +426,81 @@
     const currentX = (e.clientX - rect.left) * scaleX;
     const currentY = (e.clientY - rect.top) * scaleY;
     
-    selectionRect = {
-      x: Math.min(selectionStart.x, currentX),
-      y: Math.min(selectionStart.y, currentY),
-      width: Math.abs(currentX - selectionStart.x),
-      height: Math.abs(currentY - selectionStart.y)
-    };
+    // 리사이징 처리
+    if (isResizing && resizingBlock && resizeStartPos && originalSelection) {
+      const scaleRatio = currentScale / baseScale;
+      const deltaX = (currentX - resizeStartPos.x) / scaleRatio;
+      const deltaY = (currentY - resizeStartPos.y) / scaleRatio;
+      
+      const newSelection = { ...originalSelection };
+      
+      switch (resizeHandle) {
+        case 'nw':
+          newSelection.x = originalSelection.x + deltaX;
+          newSelection.y = originalSelection.y + deltaY;
+          newSelection.width = originalSelection.width - deltaX;
+          newSelection.height = originalSelection.height - deltaY;
+          break;
+        case 'ne':
+          newSelection.y = originalSelection.y + deltaY;
+          newSelection.width = originalSelection.width + deltaX;
+          newSelection.height = originalSelection.height - deltaY;
+          break;
+        case 'sw':
+          newSelection.x = originalSelection.x + deltaX;
+          newSelection.width = originalSelection.width - deltaX;
+          newSelection.height = originalSelection.height + deltaY;
+          break;
+        case 'se':
+          newSelection.width = originalSelection.width + deltaX;
+          newSelection.height = originalSelection.height + deltaY;
+          break;
+      }
+      
+      // 최소 크기 제한
+      if (newSelection.width > 20 && newSelection.height > 20) {
+        resizingBlock.selection = newSelection;
+        drawExistingBlocks();
+      }
+      return;
+    }
     
-    // 오버레이 캔버스에만 선택 영역 그리기
-    drawSelectionOverlay();
+    // 새 선택 영역 그리기
+    if (selectionStart) {
+      selectionRect = {
+        x: Math.min(selectionStart.x, currentX),
+        y: Math.min(selectionStart.y, currentY),
+        width: Math.abs(currentX - selectionStart.x),
+        height: Math.abs(currentY - selectionStart.y)
+      };
+      
+      // 오버레이 캔버스에만 선택 영역 그리기
+      drawSelectionOverlay();
+    }
+    
+    // 커서 업데이트
+    updateCursor(currentX, currentY);
   }
   
   function handleMouseUp(e) {
-    if (extractionMode !== 'manual' || !selectionStart || !selectionRect) return;
+    if (extractionMode !== 'manual') return;
     
-    if (selectionRect.width > 10 && selectionRect.height > 10) {
-      // 영역이 충분히 큰 경우에만 블록 생성
-      createBlockFromSelection();
+    // 리사이징 종료
+    if (isResizing) {
+      isResizing = false;
+      resizingBlock = null;
+      resizeHandle = null;
+      resizeStartPos = null;
+      originalSelection = null;
+      return;
+    }
+    
+    // 새 선택 영역 처리
+    if (selectionStart && selectionRect) {
+      if (selectionRect.width > 10 && selectionRect.height > 10) {
+        // 영역이 충분히 큰 경우에만 블록 생성
+        createBlockFromSelection();
+      }
     }
     
     // 선택 모드 종료
@@ -407,6 +508,45 @@
     selectionStart = null;
     selectionRect = null;
     clearSelectionOverlay();
+  }
+  
+  // 커서 업데이트 함수
+  function updateCursor(x, y) {
+    if (!overlayCanvas || extractionMode !== 'manual') return;
+    
+    const scaleRatio = currentScale / baseScale;
+    let cursorSet = false;
+    
+    for (const block of selectedBlocks) {
+      if (block.page === currentPage && checkedBlocks.has(block.id)) {
+        const scaledX = block.selection.x * scaleRatio;
+        const scaledY = block.selection.y * scaleRatio;
+        const scaledWidth = block.selection.width * scaleRatio;
+        const scaledHeight = block.selection.height * scaleRatio;
+        
+        const handleSize = 8;
+        const handles = [
+          { x: scaledX, y: scaledY, cursor: 'nw-resize' },
+          { x: scaledX + scaledWidth - handleSize, y: scaledY, cursor: 'ne-resize' },
+          { x: scaledX, y: scaledY + scaledHeight - handleSize, cursor: 'sw-resize' },
+          { x: scaledX + scaledWidth - handleSize, y: scaledY + scaledHeight - handleSize, cursor: 'se-resize' }
+        ];
+        
+        for (const handle of handles) {
+          if (x >= handle.x && x <= handle.x + handleSize &&
+              y >= handle.y && y <= handle.y + handleSize) {
+            overlayCanvas.style.cursor = handle.cursor;
+            cursorSet = true;
+            break;
+          }
+        }
+        if (cursorSet) break;
+      }
+    }
+    
+    if (!cursorSet) {
+      overlayCanvas.style.cursor = 'crosshair';
+    }
   }
   
   function createBlockFromSelection() {
@@ -609,6 +749,27 @@
         overlayCtx.fillStyle = 'white';
         overlayCtx.font = 'bold 12px sans-serif';
         overlayCtx.fillText(block.title, scaledX + 5, scaledY - 8);
+        
+        // 리사이즈 핸들 그리기 (체크된 블록만)
+        if (checkedBlocks.has(block.id)) {
+          const handleSize = 8;
+          const handles = [
+            { x: scaledX, y: scaledY, type: 'nw' },
+            { x: scaledX + scaledWidth - handleSize, y: scaledY, type: 'ne' },
+            { x: scaledX, y: scaledY + scaledHeight - handleSize, type: 'sw' },
+            { x: scaledX + scaledWidth - handleSize, y: scaledY + scaledHeight - handleSize, type: 'se' }
+          ];
+          
+          overlayCtx.fillStyle = 'white';
+          overlayCtx.strokeStyle = color;
+          overlayCtx.lineWidth = 2;
+          
+          handles.forEach(handle => {
+            overlayCtx.fillRect(handle.x, handle.y, handleSize, handleSize);
+            overlayCtx.strokeRect(handle.x, handle.y, handleSize, handleSize);
+          });
+        }
+        
         overlayCtx.restore();
       }
     });
@@ -674,62 +835,90 @@
 
   // 드래그 상태
   let draggedBlock = null;
-  let dropTargetBlock = null;
+  let draggedIndex = null;
+  let dropTargetIndex = null;
 
-  function handleDragStart(event, block) {
+  function handleDragStart(event, block, index) {
     draggedBlock = block;
-    event.dataTransfer.effectAllowed = 'link';
+    draggedIndex = index;
+    event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData('text/plain', block.id);
+    event.currentTarget.classList.add('dragging');
   }
 
   function handleDragEnd(event) {
     draggedBlock = null;
-    dropTargetBlock = null;
+    draggedIndex = null;
+    dropTargetIndex = null;
     // 모든 드래그 관련 클래스 제거
-    document.querySelectorAll('.drag-over').forEach(el => {
-      el.classList.remove('drag-over');
+    document.querySelectorAll('.drag-over, .drag-over-top, .drag-over-bottom, .dragging').forEach(el => {
+      el.classList.remove('drag-over', 'drag-over-top', 'drag-over-bottom', 'dragging');
     });
   }
 
-  function handleDragOver(event, block) {
+  function handleDragOver(event, targetIndex) {
     event.preventDefault();
-    event.dataTransfer.dropEffect = 'link';
+    event.dataTransfer.dropEffect = 'move';
     
-    // 연결 가능한 조합인지 확인
-    if (canConnect(draggedBlock, block)) {
-      dropTargetBlock = block;
-      event.currentTarget.classList.add('drag-over');
+    if (draggedBlock && draggedIndex !== targetIndex) {
+      dropTargetIndex = targetIndex;
+      
+      // 드롭 위치 표시를 위한 시각적 피드백
+      const rect = event.currentTarget.getBoundingClientRect();
+      const midpoint = rect.top + rect.height / 2;
+      
+      // 마우스가 요소의 위쪽 절반에 있으면 위에 표시, 아래쪽 절반에 있으면 아래에 표시
+      if (event.clientY < midpoint) {
+        event.currentTarget.classList.remove('drag-over-bottom');
+        event.currentTarget.classList.add('drag-over-top');
+      } else {
+        event.currentTarget.classList.remove('drag-over-top');
+        event.currentTarget.classList.add('drag-over-bottom');
+      }
     }
   }
 
   function handleDragLeave(event) {
-    event.currentTarget.classList.remove('drag-over');
+    event.currentTarget.classList.remove('drag-over-top', 'drag-over-bottom');
   }
 
-  function handleDrop(event, targetBlock) {
+  function handleDrop(event, targetIndex) {
     event.preventDefault();
-    event.currentTarget.classList.remove('drag-over');
+    event.currentTarget.classList.remove('drag-over-top', 'drag-over-bottom');
     
-    if (draggedBlock && targetBlock && canConnect(draggedBlock, targetBlock)) {
-      // 지문/해설을 문제에 드롭한 경우
-      if ((draggedBlock.type === 'passage' || draggedBlock.type === 'explanation') && targetBlock.type === 'question') {
-        toggleLinkBlock(draggedBlock, targetBlock.id);
+    if (draggedBlock && draggedIndex !== null && targetIndex !== null && draggedIndex !== targetIndex) {
+      // 배열에서 드래그된 블록 제거
+      const newBlocks = [...selectedBlocks];
+      const [movedBlock] = newBlocks.splice(draggedIndex, 1);
+      
+      // 드롭 위치 계산
+      const rect = event.currentTarget.getBoundingClientRect();
+      const midpoint = rect.top + rect.height / 2;
+      let insertIndex = targetIndex;
+      
+      // 마우스 위치에 따라 삽입 위치 결정
+      if (event.clientY > midpoint && draggedIndex < targetIndex) {
+        insertIndex = targetIndex;
+      } else if (event.clientY > midpoint && draggedIndex > targetIndex) {
+        insertIndex = targetIndex + 1;
+      } else if (event.clientY <= midpoint && draggedIndex > targetIndex) {
+        insertIndex = targetIndex;
+      } else if (event.clientY <= midpoint && draggedIndex < targetIndex) {
+        insertIndex = targetIndex - 1;
       }
-      // 문제를 지문/해설에 드롭한 경우
-      else if (draggedBlock.type === 'question' && (targetBlock.type === 'passage' || targetBlock.type === 'explanation')) {
-        toggleLinkBlock(targetBlock, draggedBlock.id);
-      }
+      
+      // 새 위치에 블록 삽입
+      newBlocks.splice(insertIndex, 0, movedBlock);
+      
+      // 상태 업데이트
+      selectedBlocks = newBlocks;
+      
+      // 블록 번호 재계산
+      recalculateBlockNumbers();
+      
+      // 캔버스의 블록 영역 다시 그리기
+      drawExistingBlocks();
     }
-  }
-
-  function canConnect(source, target) {
-    if (!source || !target || source.id === target.id) return false;
-    
-    // 지문/해설 -> 문제 또는 문제 -> 지문/해설만 가능
-    return (
-      ((source.type === 'passage' || source.type === 'explanation') && target.type === 'question') ||
-      (source.type === 'question' && (target.type === 'passage' || target.type === 'explanation'))
-    );
   }
 
   // 선택된 블록들 일괄 삭제
@@ -1379,7 +1568,7 @@
               </div>
               
               <!-- 페이지 미리보기 -->
-              <div class="bg-gray-50 p-4 rounded-lg overflow-auto" style="max-height: 600px;">
+              <div class="bg-gray-50 p-4 rounded-lg overflow-auto" style="max-height: 840px;">
                 {#if fileDataUrl}
                   {#if selectedMaterial.file_type === 'application/pdf'}
                     <!-- PDF 캔버스 -->
@@ -1501,16 +1690,16 @@
               </div>
               
               <!-- 블록 리스트 -->
-              <div class="space-y-2 overflow-y-auto" style="max-height: 600px;">
+              <div class="space-y-2 overflow-y-auto" style="max-height: 840px;">
                 {#each selectedBlocks as block, index}
                   <div 
-                    class="rect-block-item {dropTargetBlock?.id === block.id ? 'drag-over' : ''}" 
+                    class="rect-block-item" 
                     draggable="true"
-                    on:dragstart={(e) => handleDragStart(e, block)}
+                    on:dragstart={(e) => handleDragStart(e, block, index)}
                     on:dragend={handleDragEnd}
-                    on:dragover={(e) => handleDragOver(e, block)}
+                    on:dragover={(e) => handleDragOver(e, index)}
                     on:dragleave={handleDragLeave}
-                    on:drop={(e) => handleDrop(e, block)}
+                    on:drop={(e) => handleDrop(e, index)}
                   >
                     <div class="space-y-2">
                       <!-- 블록 헤더 -->
@@ -1666,7 +1855,7 @@
                             class="btn btn-xs {bulkType === type.value ? type.color : 'btn-ghost'}"
                             on:click={() => {
                               bulkType = type.value;
-                              batchChangeType(type.value);
+                              applyBulkType();
                             }}
                           >
                             {type.label}
@@ -1813,7 +2002,7 @@
         <div class="card bg-base-100 shadow">
           <div class="card-body p-0">
             <div class="editable-table-container" tabindex="-1">
-              <div class="overflow-x-auto" style="max-height: 600px;">
+              <div class="overflow-x-auto" style="max-height: 840px;">
                 <table class="editable-table w-full">
                   <thead class="sticky top-0 bg-base-200">
                     <tr>
@@ -2069,6 +2258,37 @@
 
   .rect-block-item.dragging {
     @apply opacity-50;
+  }
+
+  /* 드래그 위치 표시 */
+  .rect-block-item.drag-over-top {
+    position: relative;
+  }
+  
+  .rect-block-item.drag-over-top::before {
+    content: '';
+    position: absolute;
+    top: -2px;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background-color: #3B82F6;
+    border-radius: 2px;
+  }
+  
+  .rect-block-item.drag-over-bottom {
+    position: relative;
+  }
+  
+  .rect-block-item.drag-over-bottom::after {
+    content: '';
+    position: absolute;
+    bottom: -2px;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background-color: #3B82F6;
+    border-radius: 2px;
   }
 
   /* 추가 스타일 */
