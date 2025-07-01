@@ -926,7 +926,52 @@
   
   // 키보드 제어 함수들
   function handleKeyDown(event) {
-    if (extractionStep !== 'configure-blocks' || isEditingCell) return;
+    // 블록 영역 지정 단계에서 화살표 키로 페이지 이동
+    if (extractionStep === 'extract-blocks' && !isDrawing) {
+      switch (event.key) {
+        case 'ArrowLeft':
+          event.preventDefault();
+          if (currentPage > 1) {
+            handlePageChange(currentPage - 1);
+          }
+          return;
+          
+        case 'ArrowRight':
+          event.preventDefault();
+          if (currentPage < totalPages) {
+            handlePageChange(currentPage + 1);
+          }
+          return;
+      }
+    }
+    
+    if (extractionStep !== 'configure-blocks') return;
+    
+    // 편집 모드에서도 일부 키는 처리
+    if (isEditingCell) {
+      switch (event.key) {
+        case 'Tab':
+          if (!event.shiftKey) {
+            event.preventDefault();
+            moveToNextField();
+          } else {
+            event.preventDefault();
+            moveToPrevField();
+          }
+          return;
+          
+        case 'Enter':
+          event.preventDefault();
+          moveToNextField();
+          return;
+          
+        case 'Escape':
+          isEditingCell = false;
+          currentFieldName = 'title';
+          return;
+      }
+      return; // 편집 중일 때는 다른 키 처리 안함
+    }
     
     switch (event.key) {
       case 'ArrowUp':
@@ -945,12 +990,22 @@
         }
         break;
         
+      case 'ArrowLeft':
+        event.preventDefault();
+        moveToPrevField();
+        break;
+        
+      case 'ArrowRight':
+        event.preventDefault();
+        moveToNextField();
+        break;
+        
       case 'Enter':
         event.preventDefault();
         if (!event.shiftKey) {
-          // Enter: 현재 행의 제목 편집
+          // Enter: 현재 셀 편집
           isEditingCell = true;
-          focusOnCell('title', selectedRowIndex);
+          focusOnCell(currentFieldName, selectedRowIndex);
         } else {
           // Shift+Enter: 다음 필드로 이동
           moveToNextField();
@@ -1001,13 +1056,14 @@
       case 'Escape':
         // Esc: 편집 모드 종료
         isEditingCell = false;
+        currentFieldName = 'title';
         break;
         
       case 'F2':
         // F2: 현재 셀 편집
         event.preventDefault();
         isEditingCell = true;
-        focusOnCell('title', selectedRowIndex);
+        focusOnCell(currentFieldName, selectedRowIndex);
         break;
     }
   }
@@ -1031,23 +1087,71 @@
     }, 50);
   }
   
+  // 현재 포커스된 필드 추적
+  let currentFieldName = 'title';
+  let currentFieldIndex = 0;
+  
   function moveToNextField() {
-    // 현재 블록의 타입에 따라 다음 필드 결정
     const block = selectedBlocks[selectedRowIndex];
     if (!block) return;
     
-    // 필드 순서: title -> type -> format(문제일 때) -> answer(문제일 때) -> tags
-    // 구현은 간단하게 다음 행으로 이동
-    if (selectedRowIndex < selectedBlocks.length - 1) {
+    // 필드 순서 정의
+    const fieldOrder = ['title', 'type'];
+    if (block.type === 'question') {
+      fieldOrder.push('format', 'answer', 'score');
+    }
+    fieldOrder.push('tags');
+    
+    // 현재 필드의 인덱스 찾기
+    const currentIndex = fieldOrder.indexOf(currentFieldName);
+    
+    if (currentIndex < fieldOrder.length - 1) {
+      // 같은 행의 다음 필드로 이동
+      currentFieldName = fieldOrder[currentIndex + 1];
+      isEditingCell = true;
+      focusOnCell(currentFieldName, selectedRowIndex);
+    } else if (selectedRowIndex < selectedBlocks.length - 1) {
+      // 다음 행의 첫 번째 필드로 이동
       selectedRowIndex++;
+      currentFieldName = 'title';
+      isEditingCell = true;
       scrollToRow(selectedRowIndex);
+      focusOnCell(currentFieldName, selectedRowIndex);
     }
   }
   
   function moveToPrevField() {
-    if (selectedRowIndex > 0) {
+    const block = selectedBlocks[selectedRowIndex];
+    if (!block) return;
+    
+    // 필드 순서 정의
+    const fieldOrder = ['title', 'type'];
+    if (block.type === 'question') {
+      fieldOrder.push('format', 'answer', 'score');
+    }
+    fieldOrder.push('tags');
+    
+    // 현재 필드의 인덱스 찾기
+    const currentIndex = fieldOrder.indexOf(currentFieldName);
+    
+    if (currentIndex > 0) {
+      // 같은 행의 이전 필드로 이동
+      currentFieldName = fieldOrder[currentIndex - 1];
+      isEditingCell = true;
+      focusOnCell(currentFieldName, selectedRowIndex);
+    } else if (selectedRowIndex > 0) {
+      // 이전 행의 마지막 필드로 이동
       selectedRowIndex--;
+      const prevBlock = selectedBlocks[selectedRowIndex];
+      const prevFieldOrder = ['title', 'type'];
+      if (prevBlock.type === 'question') {
+        prevFieldOrder.push('format', 'answer', 'score');
+      }
+      prevFieldOrder.push('tags');
+      currentFieldName = prevFieldOrder[prevFieldOrder.length - 1];
+      isEditingCell = true;
       scrollToRow(selectedRowIndex);
+      focusOnCell(currentFieldName, selectedRowIndex);
     }
   }
   
@@ -1734,10 +1838,11 @@
                         </td>
                         <td class="p-3 border-b">
                           <select 
+                            id="type-{index}"
                             class="select select-bordered select-sm w-full bg-transparent"
                             value={block.type}
                             on:change={(e) => updateBlockType(block.id, e.target.value)}
-                            on:focus={() => { selectedRowIndex = index; }}
+                            on:focus={() => { selectedRowIndex = index; currentFieldName = 'type'; }}
                           >
                             {#each blockTypes as type}
                               <option value={type.value}>{type.label}</option>
@@ -1747,9 +1852,10 @@
                         <td class="p-3 border-b">
                           {#if block.type === 'question'}
                             <select 
+                              id="format-{index}"
                               class="select select-bordered select-sm w-full bg-transparent"
                               bind:value={block.format}
-                              on:focus={() => { selectedRowIndex = index; }}
+                              on:focus={() => { selectedRowIndex = index; currentFieldName = 'format'; }}
                             >
                               <option value="">선택</option>
                               <option value="multiple_choice">객관식</option>
@@ -1764,11 +1870,12 @@
                         <td class="p-3 border-b">
                           {#if block.type === 'question'}
                             <input 
+                              id="answer-{index}"
                               type="text" 
                               class="input input-bordered input-sm w-full bg-transparent"
                               placeholder="정답 입력"
                               bind:value={block.answer}
-                              on:focus={() => { selectedRowIndex = index; isEditingCell = true; }}
+                              on:focus={() => { selectedRowIndex = index; currentFieldName = 'answer'; isEditingCell = true; }}
                               on:blur={() => { isEditingCell = false; }}
                             >
                           {:else}
@@ -1778,12 +1885,13 @@
                         <td class="p-3 border-b">
                           {#if block.type === 'question'}
                             <input 
+                              id="score-{index}"
                               type="number" 
                               class="input input-bordered input-sm w-full bg-transparent"
                               placeholder="3"
                               min="1"
                               bind:value={block.score}
-                              on:focus={() => { selectedRowIndex = index; isEditingCell = true; }}
+                              on:focus={() => { selectedRowIndex = index; currentFieldName = 'score'; isEditingCell = true; }}
                               on:blur={() => { isEditingCell = false; }}
                             >
                           {:else}
@@ -1792,9 +1900,10 @@
                         </td>
                         <td class="p-3 border-b">
                           <select 
+                            id="difficulty-{index}"
                             class="select select-bordered select-sm w-full bg-transparent"
                             bind:value={block.difficulty}
-                            on:focus={() => { selectedRowIndex = index; }}
+                            on:focus={() => { selectedRowIndex = index; currentFieldName = 'difficulty'; }}
                           >
                             <option value="">선택</option>
                             <option value="very_easy">매우 쉬움</option>
@@ -1869,9 +1978,12 @@
                               {/each}
                             {/if}
                             <input 
+                              id="tags-{index}"
                               type="text" 
                               class="input input-xs input-ghost w-20"
                               placeholder="+태그"
+                              on:focus={() => { selectedRowIndex = index; currentFieldName = 'tags'; isEditingCell = true; }}
+                              on:blur={() => { isEditingCell = false; }}
                               on:keypress={(e) => {
                                 if (e.key === 'Enter' && e.target.value) {
                                   addCustomTag(block, e.target.value);
