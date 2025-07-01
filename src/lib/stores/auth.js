@@ -10,6 +10,14 @@ export async function initAuth() {
   try {
     loading.set(true);
     
+    // Supabase가 초기화되지 않았으면 스킵
+    if (!supabase) {
+      console.warn('Supabase가 초기화되지 않았습니다.');
+      user.set(null);
+      loading.set(false);
+      return;
+    }
+    
     // 현재 세션 확인
     const { data: { session } } = await supabase.auth.getSession();
     user.set(session?.user ?? null);

@@ -2,6 +2,12 @@ import { supabase } from '$lib/supabase.js';
 
 /** @type {import('@sveltejs/kit').Handle} */
 export async function handle({ event, resolve }) {
+  // Supabase가 초기화되지 않았으면 스킵
+  if (!supabase) {
+    event.locals.user = null;
+    return resolve(event);
+  }
+  
   // Supabase 세션 확인
   console.log('hooks.server.js - Processing:', event.url.pathname);
   
@@ -28,7 +34,7 @@ export async function handle({ event, resolve }) {
     }
     
     // Authorization 헤더가 없으면 세션 확인
-    if (!event.locals.user) {
+    if (!event.locals.user && supabase) {
       const { data: { session } } = await supabase.auth.getSession();
       
       if (session?.user) {
