@@ -1,7 +1,9 @@
 <script>
-  import { signIn, signUp, signInWithGoogle } from '$lib/stores/auth.js';
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
+  import { signIn as authSignIn, signUp as authSignUp, signInWithGoogle as authSignInWithGoogle } from '$lib/supabase.js';
+  import { checkSupabaseConfig } from '$lib/supabase.js';
+  import { onMount } from 'svelte';
   
   let email = '';
   let password = '';
@@ -9,11 +11,26 @@
   let isSignUp = false;
   let loading = false;
   let error = null;
+  let isConfigValid = false;
+  
+  onMount(() => {
+    try {
+      isConfigValid = checkSupabaseConfig();
+    } catch (e) {
+      error = 'Supabase 환경 변수가 설정되지 않았습니다. 관리자에게 문의하세요.';
+      console.error('Supabase configuration error:', e);
+    }
+  });
   
   // URL 파라미터에서 리다이렉트 경로 확인
   $: redirectTo = $page.url.searchParams.get('redirectTo') || '/';
   
   async function handleSubmit() {
+    if (!isConfigValid) {
+      error = 'Supabase가 초기화되지 않았습니다. 관리자에게 문의하세요.';
+      return;
+    }
+    
     error = null;
     loading = true;
     
@@ -22,7 +39,7 @@
       
       if (isSignUp) {
         // 회원가입
-        result = await signUp(email, password, { name });
+        result = await authSignUp(email, password, { name });
         
         if (!result.error && result.data?.user) {
           // 회원가입 성공 메시지
@@ -31,7 +48,7 @@
         }
       } else {
         // 로그인
-        result = await signIn(email, password);
+        result = await authSignIn(email, password);
         
         if (!result.error && result.data?.user) {
           // 로그인 성공 시 리다이렉트
@@ -50,11 +67,16 @@
   }
   
   async function handleGoogleLogin() {
+    if (!isConfigValid) {
+      error = 'Supabase가 초기화되지 않았습니다. 관리자에게 문의하세요.';
+      return;
+    }
+    
     error = null;
     loading = true;
     
     try {
-      const result = await signInWithGoogle();
+      const result = await authSignInWithGoogle();
       if (result.error) {
         error = result.error.message;
       }

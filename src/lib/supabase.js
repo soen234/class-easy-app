@@ -1,9 +1,9 @@
 import { createClient } from '@supabase/supabase-js'
-import { env } from '$env/dynamic/public'
+import { PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_ANON_KEY } from '$env/static/public'
 
 // 환경 변수
-const SUPABASE_URL = env.PUBLIC_SUPABASE_URL
-const SUPABASE_ANON_KEY = env.PUBLIC_SUPABASE_ANON_KEY
+const SUPABASE_URL = PUBLIC_SUPABASE_URL
+const SUPABASE_ANON_KEY = PUBLIC_SUPABASE_ANON_KEY
 
 // Supabase 클라이언트 생성 (환경 변수가 있을 때만)
 export const supabase = (SUPABASE_URL && SUPABASE_ANON_KEY) 
