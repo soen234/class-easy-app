@@ -25,6 +25,31 @@
     });
   }
   let extractionStep = 'select-material';
+  
+  // 브라우저 히스토리 관리
+  function updateHistory() {
+    if (browser) {
+      const url = new URL(window.location);
+      url.searchParams.set('step', extractionStep);
+      if (selectedMaterial) {
+        url.searchParams.set('materialId', selectedMaterial.id);
+      }
+      window.history.pushState({ step: extractionStep }, '', url);
+    }
+  }
+  
+  // 뒤로가기 처리
+  function handlePopState(event) {
+    if (event.state && event.state.step) {
+      extractionStep = event.state.step;
+    } else {
+      // URL 파라미터에서 step 확인
+      const stepParam = $page.url.searchParams.get('step');
+      if (stepParam) {
+        extractionStep = stepParam;
+      }
+    }
+  }
   let isExtracting = false;
   
   // 파일 관련 변수
@@ -131,22 +156,35 @@
     if (browser && $user?.id) {
       await fetchMaterials($user.id, 'original');
       
-      // URL 파라미터에서 materialId 확인
+      // URL 파라미터에서 step과 materialId 확인
+      const stepParam = $page.url.searchParams.get('step');
       const materialId = $page.url.searchParams.get('materialId');
+      
+      if (stepParam) {
+        extractionStep = stepParam;
+      }
+      
       if (materialId) {
         const material = $materials.find(m => m.id === materialId);
         if (material) {
-          selectMaterial(material);
+          selectedMaterial = material;
+          totalPages = material.pages || 10;
+          if (extractionStep === 'select-material') {
+            extractionStep = 'extract-blocks';
+          }
+          await loadFile();
         }
       }
     }
     
-    // 키보드 이벤트 리스너 추가
+    // 이벤트 리스너 추가
     if (browser) {
       window.addEventListener('keydown', handleKeyDown);
+      window.addEventListener('popstate', handlePopState);
       
       return () => {
         window.removeEventListener('keydown', handleKeyDown);
+        window.removeEventListener('popstate', handlePopState);
       };
     }
   });
@@ -155,6 +193,9 @@
     selectedMaterial = material;
     extractionStep = 'extract-blocks';
     totalPages = material.pages || 10;
+    
+    // 히스토리 업데이트
+    updateHistory();
     
     // 파일 로드
     await loadFile();
@@ -556,7 +597,10 @@
     // 호버 상태 업데이트
     if (hoveredBlockId !== newHoveredBlockId) {
       hoveredBlockId = newHoveredBlockId;
-      drawExistingBlocks();
+      // 선택 중이 아닐 때만 다시 그리기
+      if (!selectionStart) {
+        drawExistingBlocks();
+      }
     }
     
     if (!cursorSet) {
@@ -681,8 +725,8 @@
     // 오버레이 캔버스 클리어
     overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
     
-    // 기존 블록들 먼저 그리기
-    drawExistingBlocks();
+    // 기존 블록들 그리기 (drawBlocks를 호출)
+    drawBlocks();
     
     // 선택 영역 그리기
     if (selectionRect && selectionStart) {
@@ -703,29 +747,29 @@
   function clearSelectionOverlay() {
     if (!overlayCtx || !overlayCanvas) return;
     overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    // 선택이 끝난 후 기존 블록들 다시 그리기
+    drawBlocks();
   }
   
   function drawSelectionRect() {
-    if (!ctx || !selectionRect) return;
+    if (!overlayCtx || !selectionRect) return;
     
-    ctx.save();
-    ctx.strokeStyle = '#3B82F6';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([5, 5]);
-    ctx.strokeRect(
+    overlayCtx.save();
+    overlayCtx.strokeStyle = '#3B82F6';
+    overlayCtx.lineWidth = 2;
+    overlayCtx.setLineDash([5, 5]);
+    overlayCtx.strokeRect(
       selectionRect.x,
       selectionRect.y,
       selectionRect.width,
       selectionRect.height
     );
-    ctx.restore();
+    overlayCtx.restore();
   }
   
-  function drawExistingBlocks() {
+  // 블록만 그리는 함수 (선택 영역 제외)
+  function drawBlocks() {
     if (!overlayCtx || !overlayCanvas) return;
-    
-    // 오버레이 캔버스 클리어
-    overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
     
     // 스케일 비율 계산 (현재 스케일 / 블록 생성 시 스케일)
     const scaleRatio = currentScale / baseScale;
@@ -784,11 +828,16 @@
         overlayCtx.restore();
       }
     });
+  }
+  
+  function drawExistingBlocks() {
+    if (!overlayCtx || !overlayCanvas) return;
     
-    // 현재 선택 중인 영역도 표시
-    if (selectionRect && selectionStart) {
-      drawSelectionRect();
-    }
+    // 오버레이 캔버스 클리어
+    overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    
+    // 블록들 그리기
+    drawBlocks();
   }
   
   function removeBlock(blockId) {
@@ -953,6 +1002,7 @@
       return;
     }
     extractionStep = 'configure-blocks';
+    updateHistory();
   }
   
   function goBack() {
@@ -961,6 +1011,7 @@
     } else {
       extractionStep = 'select-material';
     }
+    updateHistory();
   }
   
   async function finalizeExtraction() {
@@ -1417,7 +1468,7 @@
         
         <div class="breadcrumbs text-sm">
           <ul>
-            <li><a href="/">홈</a></li>
+            <li><a href="/">내 자료</a></li>
             <li>문항 추출</li>
           </ul>
         </div>
@@ -1913,17 +1964,16 @@
         </div>
         
         <!-- 일괄 작업 도구 -->
-        <div class="card bg-base-100 shadow">
-          <div class="card-body">
-            <div class="space-y-3">
-              <!-- 체크된 항목 상태 표시 -->
-              {#if checkedBlocks.size > 0}
+        {#if checkedBlocks.size > 0}
+          <div class="card bg-base-100 shadow">
+            <div class="card-body">
+              <div class="space-y-3">
+                <!-- 체크된 항목 상태 표시 -->
                 <div class="text-sm text-info">
                   {checkedBlocks.size}개 항목이 선택되었습니다.
                 </div>
-              {/if}
-              
-              <div class="flex flex-wrap gap-3">
+                
+                <div class="flex flex-wrap gap-3">
                 <div class="flex items-center gap-2">
                   <span class="text-sm font-medium whitespace-nowrap">블록타입 :</span>
                   <select 
@@ -2008,6 +2058,7 @@
             </div>
           </div>
         </div>
+        {/if}
         
         <!-- 표 형식 편집기 -->
         <div class="card bg-base-100 shadow">
