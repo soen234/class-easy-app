@@ -15,6 +15,15 @@
   let extractionMode = 'manual';
   let selectedBlocks = [];
   let nextBlockId = 1;
+  
+  // UUID 생성 함수
+  function generateUUID() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0;
+      const v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
   let extractionStep = 'select-material';
   let isExtracting = false;
   
@@ -423,7 +432,7 @@
     };
     
     const newBlock = {
-      id: `block-${nextBlockId}`,
+      id: generateUUID(),
       type: defaultType,
       title: title,
       page: currentPage,
@@ -453,7 +462,12 @@
   function updateBlockType(blockId, newType) {
     selectedBlocks = selectedBlocks.map(block => {
       if (block.id === blockId) {
-        return { ...block, type: newType };
+        const updatedBlock = { ...block, type: newType };
+        // 문제로 변경할 때 연결된 블록 초기화
+        if (newType === 'question') {
+          updatedBlock.linkedBlocks = [];
+        }
+        return updatedBlock;
       }
       return block;
     });
@@ -962,7 +976,7 @@
           
         case 'Enter':
           event.preventDefault();
-          moveToNextField();
+          moveToNextRow();
           return;
           
         case 'Escape':
@@ -1090,6 +1104,15 @@
   // 현재 포커스된 필드 추적
   let currentFieldName = 'title';
   let currentFieldIndex = 0;
+  
+  function moveToNextRow() {
+    if (selectedRowIndex < selectedBlocks.length - 1) {
+      selectedRowIndex++;
+      isEditingCell = true;
+      scrollToRow(selectedRowIndex);
+      focusOnCell(currentFieldName, selectedRowIndex);
+    }
+  }
   
   function moveToNextField() {
     const block = selectedBlocks[selectedRowIndex];
