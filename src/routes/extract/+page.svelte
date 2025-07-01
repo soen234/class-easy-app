@@ -927,7 +927,7 @@
   // 키보드 제어 함수들
   function handleKeyDown(event) {
     // 블록 영역 지정 단계에서 화살표 키로 페이지 이동
-    if (extractionStep === 'extract-blocks' && !isDrawing) {
+    if (extractionStep === 'extract-blocks' && !isSelecting) {
       switch (event.key) {
         case 'ArrowLeft':
           event.preventDefault();
