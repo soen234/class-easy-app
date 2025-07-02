@@ -429,59 +429,88 @@
   }
   
   async function autoExtractBlocks() {
-    if (!ctx || !canvas) {
-      console.error('캔버스가 준비되지 않았습니다');
+    if (!pdfDoc) {
+      console.error('PDF가 로드되지 않았습니다');
       return;
     }
     
     isExtracting = true;
+    const totalBlocksFound = [];
     
     try {
-      // 전체 페이지의 이미지 데이터 가져오기
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      // 전체 페이지 처리 여부 확인
+      const extractAllPages = confirm('전체 페이지에서 문항을 추출하시겠습니까?\n(취소를 누르면 현재 페이지만 추출합니다)');
       
-      // 문항 패턴 찾기
-      const questionAreas = detectQuestionPatterns(imageData, canvas.width, canvas.height);
+      const startPage = extractAllPages ? 1 : currentPage;
+      const endPage = extractAllPages ? totalPages : currentPage;
       
-      console.log(`${questionAreas.length}개의 문항 영역을 찾았습니다`);
+      // 각 페이지별로 처리
+      for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
+        console.log(`${pageNum}/${endPage} 페이지 처리 중...`);
+        
+        // 현재 페이지가 아니면 렌더링
+        if (pageNum !== currentPage) {
+          await renderPage(pageNum);
+          // 렌더링 완료 대기
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+        
+        if (!ctx || !canvas) continue;
+        
+        // 해당 페이지의 이미지 데이터 가져오기
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        
+        // 문항 패턴 찾기
+        const questionAreas = detectQuestionPatterns(imageData, canvas.width, canvas.height);
+        
+        console.log(`${pageNum}페이지에서 ${questionAreas.length}개의 문항 영역을 찾았습니다`);
+        
+        // 찾은 영역들로 블록 생성
+        questionAreas.forEach((area, index) => {
+          // 현재 스케일 비율을 반영하여 블록 좌표를 베이스 스케일로 정규화
+          const scaleRatio = currentScale / baseScale;
+          const normalizedSelection = {
+            x: area.x / scaleRatio,
+            y: area.y / scaleRatio,
+            width: area.width / scaleRatio,
+            height: area.height / scaleRatio
+          };
+          
+          // 영역의 이미지 캡처
+          const capturedImage = captureCanvasArea(area);
+          
+          // 블록 타입별 카운터 업데이트
+          blockCounters.question++;
+          
+          const newBlock = {
+            id: generateUUID(),
+            type: 'question',
+            title: `문제 ${blockCounters.question}`,
+            page: pageNum,
+            selection: normalizedSelection,
+            content: '',
+            format: 'multiple_choice',
+            answer: '',
+            tags: [],
+            linkedBlocks: [],
+            extractedText: '',
+            imageData: capturedImage,
+            score: 3,
+            difficulty: '',
+            customTags: []
+          };
+          
+          totalBlocksFound.push(newBlock);
+        });
+      }
       
-      // 찾은 영역들로 블록 생성
-      questionAreas.forEach((area, index) => {
-        // 현재 스케일 비율을 반영하여 블록 좌표를 베이스 스케일로 정규화
-        const scaleRatio = currentScale / baseScale;
-        const normalizedSelection = {
-          x: area.x / scaleRatio,
-          y: area.y / scaleRatio,
-          width: area.width / scaleRatio,
-          height: area.height / scaleRatio
-        };
-        
-        // 영역의 이미지 캡처
-        const capturedImage = captureCanvasArea(area);
-        
-        // 블록 타입별 카운터 업데이트
-        blockCounters.question++;
-        
-        const newBlock = {
-          id: generateUUID(),
-          type: 'question',
-          title: `문제 ${blockCounters.question}`,
-          page: currentPage,
-          selection: normalizedSelection,
-          content: '',
-          format: 'multiple_choice',
-          answer: '',
-          tags: [],
-          linkedBlocks: [],
-          extractedText: '',
-          imageData: capturedImage,
-          score: 3,
-          difficulty: '',
-          customTags: []
-        };
-        
-        selectedBlocks = [...selectedBlocks, newBlock];
-      });
+      // 모든 블록을 한 번에 추가
+      selectedBlocks = [...selectedBlocks, ...totalBlocksFound];
+      
+      // 원래 페이지로 돌아가기
+      if (extractAllPages && currentPage !== endPage) {
+        await renderPage(currentPage);
+      }
       
       // 블록 영역 표시
       drawExistingBlocks();
@@ -491,6 +520,8 @@
       
       // 자동 저장
       autoSaveBlocks();
+      
+      alert(`총 ${totalBlocksFound.length}개의 문항을 찾았습니다.`);
       
     } catch (error) {
       console.error('자동 추출 오류:', error);
@@ -596,7 +627,9 @@
   function findContentStarts(densities) {
     const starts = [];
     const threshold = 10; // 최소 콘텐츠 픽셀 수
-    const emptyRowsThreshold = 30; // 연속된 빈 행 수
+    // 페이지 높이의 2%를 빈 행 임계값으로 설정 (최소 20px, 최대 50px)
+    const pageHeight = densities.length;
+    const emptyRowsThreshold = Math.max(20, Math.min(50, Math.floor(pageHeight * 0.02)));
     
     let emptyRowCount = 0;
     
@@ -662,9 +695,52 @@
     isSelecting = !isSelecting;
   }
   
+  // 리사이징 핸들 위에 있는지 확인
+  function isCheckingResize(e) {
+    if (!canvas) return false;
+    
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    
+    const mouseX = (e.clientX - rect.left) * scaleX;
+    const mouseY = (e.clientY - rect.top) * scaleY;
+    
+    const scaleRatio = currentScale / baseScale;
+    
+    for (const block of selectedBlocks) {
+      if (block.page === currentPage && block.selection) {
+        const scaledX = block.selection.x * scaleRatio;
+        const scaledY = block.selection.y * scaleRatio;
+        const scaledWidth = block.selection.width * scaleRatio;
+        const scaledHeight = block.selection.height * scaleRatio;
+        
+        const handleSize = 8;
+        const handles = [
+          { x: scaledX, y: scaledY },
+          { x: scaledX + scaledWidth - handleSize, y: scaledY },
+          { x: scaledX, y: scaledY + scaledHeight - handleSize },
+          { x: scaledX + scaledWidth - handleSize, y: scaledY + scaledHeight - handleSize }
+        ];
+        
+        for (const handle of handles) {
+          if (mouseX >= handle.x && mouseX <= handle.x + handleSize &&
+              mouseY >= handle.y && mouseY <= handle.y + handleSize) {
+            return true;
+          }
+        }
+      }
+    }
+    
+    return false;
+  }
+  
   // 마우스 이벤트 핸들러
   function handleMouseDown(e) {
-    if (extractionMode !== 'manual' || !canvas) return;
+    if (!canvas) return;
+    
+    // 자동 추출 모드에서는 리사이징만 가능
+    if (extractionMode === 'auto' && !isCheckingResize(e)) return;
     
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
@@ -705,22 +781,31 @@
       }
     }
     
-    // 리사이즈가 아니면 새 선택 시작
-    selectionStart = {
-      x: mouseX,
-      y: mouseY
-    };
-    
-    selectionRect = {
-      x: selectionStart.x,
-      y: selectionStart.y,
-      width: 0,
-      height: 0
-    };
+    // 수동 모드에서만 새 선택 시작
+    if (extractionMode === 'manual') {
+      selectionStart = {
+        x: mouseX,
+        y: mouseY
+      };
+      
+      selectionRect = {
+        x: selectionStart.x,
+        y: selectionStart.y,
+        width: 0,
+        height: 0
+      };
+    }
   }
   
   function handleMouseMove(e) {
-    if (extractionMode !== 'manual' || !canvas) return;
+    if (!canvas) return;
+    
+    // 자동 추출 모드에서는 리사이징만 처리
+    if (extractionMode === 'auto' && !isResizing) {
+      updateCursor((e.clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width),
+                   (e.clientY - canvas.getBoundingClientRect().top) * (canvas.height / canvas.getBoundingClientRect().height));
+      return;
+    }
     
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
@@ -786,7 +871,7 @@
   }
   
   function handleMouseUp(e) {
-    if (extractionMode !== 'manual') return;
+    if (!canvas) return;
     
     // 리사이징 종료 - 자동 조정 없이 그대로 저장
     if (isResizing) {
@@ -800,8 +885,8 @@
       return;
     }
     
-    // 새 선택 영역 처리 - 자동 조정 적용
-    if (selectionStart && selectionRect) {
+    // 수동 모드에서만 새 선택 영역 처리 - 자동 조정 적용
+    if (extractionMode === 'manual' && selectionStart && selectionRect) {
       if (selectionRect.width > 10 && selectionRect.height > 10) {
         // 자동 경계 조정 적용
         const adjustedRect = findContentBoundaries(
