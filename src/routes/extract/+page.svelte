@@ -444,15 +444,20 @@
       const startPage = extractAllPages ? 1 : currentPage;
       const endPage = extractAllPages ? totalPages : currentPage;
       
+      // 진행 상황 표시를 위한 변수
+      let processedPages = 0;
+      const totalPagesToProcess = endPage - startPage + 1;
+      
       // 각 페이지별로 처리
       for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
-        console.log(`${pageNum}/${endPage} 페이지 처리 중...`);
+        processedPages++;
+        console.log(`${processedPages}/${totalPagesToProcess} 페이지 처리 중...`);
         
         // 현재 페이지가 아니면 렌더링
         if (pageNum !== currentPage) {
           await renderPage(pageNum);
-          // 렌더링 완료 대기
-          await new Promise(resolve => setTimeout(resolve, 200));
+          // 렌더링 완료 대기 (더 짧게)
+          await new Promise(resolve => setTimeout(resolve, 100));
         }
         
         if (!ctx || !canvas) continue;
@@ -460,8 +465,14 @@
         // 해당 페이지의 이미지 데이터 가져오기
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         
-        // 문항 패턴 찾기
-        const questionAreas = detectQuestionPatterns(imageData, canvas.width, canvas.height);
+        // 문항 패턴 찾기 (비동기로 처리)
+        const questionAreas = await new Promise(resolve => {
+          // 다음 틱에서 처리하여 UI 블로킹 방지
+          setTimeout(() => {
+            const areas = detectQuestionPatterns(imageData, canvas.width, canvas.height);
+            resolve(areas);
+          }, 0);
+        });
         
         console.log(`${pageNum}페이지에서 ${questionAreas.length}개의 문항 영역을 찾았습니다`);
         
@@ -530,7 +541,7 @@
     }
   }
   
-  // 문항 패턴 감지 함수
+  // 문항 패턴 감지 함수 (개선된 버전)
   function detectQuestionPatterns(imageData, width, height) {
     const areas = [];
     const data = imageData.data;
@@ -547,26 +558,154 @@
     // 각 시작점에서 문항 영역 추정
     for (let i = 0; i < contentStarts.length; i++) {
       const startY = contentStarts[i];
-      const endY = contentStarts[i + 1] || height;
+      let endY = contentStarts[i + 1] || height;
       
-      // 최소 높이 체크 (100px 이상)
-      if (endY - startY < 100) continue;
+      // 실제 콘텐츠가 끝나는 지점 찾기 (아래에서 위로 스캔)
+      let actualEndY = endY;
+      for (let y = endY - 1; y > startY + 50; y--) {
+        if (rowDensities[y] > 10) {
+          actualEndY = y + 10; // 약간의 여백 추가
+          break;
+        }
+      }
+      endY = Math.min(endY, actualEndY);
+      
+      // 최소 높이 체크 (80px 이상)
+      if (endY - startY < 80) continue;
       
       // 왼쪽 여백과 오른쪽 여백 찾기
       const bounds = findHorizontalBounds(data, width, startY, endY, backgroundColor);
       
       // 유효한 영역인지 확인
       if (bounds.right - bounds.left > 100) {
-        areas.push({
-          x: bounds.left,
-          y: startY,
-          width: bounds.right - bounds.left,
-          height: endY - startY - 20 // 다음 문항과의 간격 고려
-        });
+        // 빈 공간 분석으로 문항 분할
+        const midEmptyRows = findMidEmptyRows(rowDensities, startY, endY);
+        
+        if (midEmptyRows.length > 0) {
+          // 큰 빈 공간들을 기준으로 영역 분할
+          let currentStart = startY;
+          
+          for (const empty of midEmptyRows) {
+            // 빈 공간 전까지를 하나의 문항으로
+            if (empty.position - currentStart > 50) { // 최소 높이 체크
+              // 타이트한 경계 찾기
+              const tightBounds = findTightBounds(rowDensities, currentStart, empty.position);
+              if (tightBounds.bottom - tightBounds.top > 30) {
+                areas.push({
+                  x: bounds.left,
+                  y: tightBounds.top,
+                  width: bounds.right - bounds.left,
+                  height: tightBounds.bottom - tightBounds.top
+                });
+              }
+            }
+            
+            // 다음 문항의 시작점은 빈 공간 이후
+            currentStart = empty.position + empty.size;
+          }
+          
+          // 마지막 남은 부분 처리
+          if (endY - currentStart > 50) {
+            const tightBounds = findTightBounds(rowDensities, currentStart, endY);
+            if (tightBounds.bottom - tightBounds.top > 30) {
+              areas.push({
+                x: bounds.left,
+                y: tightBounds.top,
+                width: bounds.right - bounds.left,
+                height: tightBounds.bottom - tightBounds.top
+              });
+            }
+          }
+        } else {
+          // 빈 공간이 없으면 전체 영역에서 타이트한 경계 찾기
+          const tightBounds = findTightBounds(rowDensities, startY, endY);
+          if (tightBounds.bottom - tightBounds.top > 30) {
+            areas.push({
+              x: bounds.left,
+              y: tightBounds.top,
+              width: bounds.right - bounds.left,
+              height: tightBounds.bottom - tightBounds.top
+            });
+          }
+        }
       }
     }
     
     return areas;
+  }
+  
+  // 중간에 있는 큰 빈 공간 찾기 (개선된 버전)
+  function findMidEmptyRows(densities, startY, endY) {
+    const emptySpaces = [];
+    const threshold = 5; // 적절한 민감도
+    const pageHeight = densities.length;
+    // 페이지 높이에 비례한 최소 빈 공간 크기 (2% ~ 4%)
+    const minEmptySize = Math.max(25, Math.min(60, Math.floor(pageHeight * 0.025)));
+    
+    let emptyStart = -1;
+    let emptyCount = 0;
+    
+    // 시작과 끝 부분을 제외하고 스캔 (전체 영역의 10% 제외)
+    const scanStart = startY + Math.floor((endY - startY) * 0.1);
+    const scanEnd = endY - Math.floor((endY - startY) * 0.1);
+    
+    for (let y = scanStart; y < scanEnd; y++) {
+      if (densities[y] < threshold) {
+        if (emptyStart === -1) {
+          emptyStart = y;
+        }
+        emptyCount++;
+      } else {
+        if (emptyCount > minEmptySize) {
+          // 빈 공간의 시작점을 저장 (중간이 아닌 시작점)
+          emptySpaces.push({
+            position: emptyStart,
+            size: emptyCount
+          });
+        }
+        emptyStart = -1;
+        emptyCount = 0;
+      }
+    }
+    
+    // 마지막 빈 공간 체크
+    if (emptyCount > minEmptySize) {
+      emptySpaces.push({
+        position: emptyStart,
+        size: emptyCount
+      });
+    }
+    
+    return emptySpaces;
+  }
+  
+  // 타이트한 경계 찾기 (수동 지정처럼 깔끔하게)
+  function findTightBounds(densities, startY, endY) {
+    const threshold = 8; // 콘텐츠 판단 임계값
+    const padding = 8; // 여백
+    
+    // 위에서부터 실제 콘텐츠 시작점 찾기
+    let actualTop = startY;
+    for (let y = startY; y < endY; y++) {
+      if (densities[y] >= threshold) {
+        actualTop = Math.max(startY, y - padding);
+        break;
+      }
+    }
+    
+    // 아래에서부터 실제 콘텐츠 끝점 찾기
+    let actualBottom = endY;
+    for (let y = endY - 1; y >= startY; y--) {
+      if (densities[y] >= threshold) {
+        actualBottom = Math.min(endY, y + padding);
+        break;
+      }
+    }
+    
+    return {
+      top: actualTop,
+      bottom: actualBottom
+    };
   }
   
   // 가장 많이 나타나는 색상 찾기 (배경색)
@@ -594,69 +733,86 @@
     return maxColor.split(',').map(Number);
   }
   
-  // 각 행의 콘텐츠 밀도 계산
+  // 각 행의 콘텐츠 밀도 계산 (최적화된 버전)
   function calculateRowDensities(data, width, height, bgColor) {
-    const densities = [];
+    const densities = new Float32Array(height);
     const tolerance = 30;
+    const sampleStep = 10; // 더 큰 샘플링 간격
     
+    // 배경색 RGB 값을 미리 계산
+    const bgR = bgColor[0];
+    const bgG = bgColor[1];
+    const bgB = bgColor[2];
+    
+    // 각 행을 병렬적으로 처리할 수 있도록 준비
     for (let y = 0; y < height; y++) {
       let contentPixels = 0;
+      const rowStart = y * width * 4;
       
       // 샘플링하여 성능 향상
-      for (let x = 0; x < width; x += 5) {
-        const idx = (y * width + x) * 4;
-        const r = data[idx];
-        const g = data[idx + 1];
-        const b = data[idx + 2];
+      for (let x = 0; x < width; x += sampleStep) {
+        const idx = rowStart + (x * 4);
         
-        // 배경색과 다른 픽셀인지 확인
-        if (Math.abs(r - bgColor[0]) > tolerance || 
-            Math.abs(g - bgColor[1]) > tolerance || 
-            Math.abs(b - bgColor[2]) > tolerance) {
+        // 배경색과의 차이를 빠르게 계산
+        if (Math.abs(data[idx] - bgR) > tolerance || 
+            Math.abs(data[idx + 1] - bgG) > tolerance || 
+            Math.abs(data[idx + 2] - bgB) > tolerance) {
           contentPixels++;
         }
       }
       
-      densities.push(contentPixels);
+      densities[y] = contentPixels;
     }
     
     return densities;
   }
   
-  // 콘텐츠 시작 지점 찾기
+  // 콘텐츠 시작 지점 찾기 (개선된 버전)
   function findContentStarts(densities) {
     const starts = [];
     const threshold = 10; // 최소 콘텐츠 픽셀 수
-    // 페이지 높이의 2%를 빈 행 임계값으로 설정 (최소 20px, 최대 50px)
     const pageHeight = densities.length;
-    const emptyRowsThreshold = Math.max(20, Math.min(50, Math.floor(pageHeight * 0.02)));
     
+    // 페이지 높이에 따른 동적 임계값
+    const emptyRowsThreshold = Math.max(20, Math.min(60, Math.floor(pageHeight * 0.025)));
+    
+    // 연속된 콘텐츠 영역 찾기
+    let inContent = false;
     let emptyRowCount = 0;
+    let contentStarted = -1;
     
     for (let i = 0; i < densities.length; i++) {
-      if (densities[i] < threshold) {
-        emptyRowCount++;
-      } else {
-        // 충분한 빈 공간 후에 콘텐츠가 시작하면 문항 시작으로 간주
-        if (emptyRowCount > emptyRowsThreshold && i > 50) { // 페이지 상단 제외
-          starts.push(i);
+      const hasContent = densities[i] >= threshold;
+      
+      if (hasContent) {
+        if (!inContent) {
+          // 새로운 콘텐츠 영역 시작
+          if (emptyRowCount > emptyRowsThreshold || i === 0) {
+            contentStarted = i;
+            inContent = true;
+            starts.push(i);
+          }
         }
         emptyRowCount = 0;
-      }
-    }
-    
-    // 페이지 최상단도 시작점으로 추가 (첫 문항)
-    if (starts.length === 0 || starts[0] > 100) {
-      // 상단에서 첫 콘텐츠 찾기
-      for (let i = 0; i < Math.min(200, densities.length); i++) {
-        if (densities[i] > threshold) {
-          starts.unshift(i);
-          break;
+      } else {
+        emptyRowCount++;
+        
+        // 긴 빈 공간이 나타나면 콘텐츠 영역 종료
+        if (inContent && emptyRowCount > emptyRowsThreshold * 0.5) {
+          inContent = false;
         }
       }
     }
     
-    return starts;
+    // 시작점이 너무 많으면 필터링 (너무 가까운 것들 제거)
+    const filteredStarts = [];
+    for (let i = 0; i < starts.length; i++) {
+      if (i === 0 || starts[i] - starts[i-1] > emptyRowsThreshold * 2) {
+        filteredStarts.push(starts[i]);
+      }
+    }
+    
+    return filteredStarts;
   }
   
   // 수평 경계 찾기
@@ -910,7 +1066,7 @@
   
   // 커서 업데이트 함수
   function updateCursor(x, y) {
-    if (!overlayCanvas || extractionMode !== 'manual') return;
+    if (!overlayCanvas) return;
     
     const scaleRatio = currentScale / baseScale;
     let cursorSet = false;
