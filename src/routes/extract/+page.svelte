@@ -773,124 +773,103 @@
       // 선택 영역의 이미지 데이터 가져오기
       const imageData = ctx.getImageData(x, y, width, height);
       const data = imageData.data;
+      const padding = 10; // 최소 여백
       
-      // 배경색 임계값 설정 (주로 흰색 배경)
-      const threshold = 240; // RGB 값이 모두 이 값 이상이면 배경으로 간주
-      const padding = 5; // 최소 여백
+      // 색상을 문자열로 변환하는 함수 (비교를 위해)
+      function colorToString(r, g, b) {
+        // 10단위로 반올림하여 유사한 색상을 그룹화
+        const roundedR = Math.round(r / 10) * 10;
+        const roundedG = Math.round(g / 10) * 10;
+        const roundedB = Math.round(b / 10) * 10;
+        return `${roundedR},${roundedG},${roundedB}`;
+      }
+      
+      // 가장 많이 나타나는 색상 찾기 (배경색으로 간주)
+      const colorCount = new Map();
+      const sampleRate = 10; // 성능을 위해 10픽셀마다 샘플링
+      
+      for (let i = 0; i < data.length; i += 4 * sampleRate) {
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        const colorStr = colorToString(r, g, b);
+        colorCount.set(colorStr, (colorCount.get(colorStr) || 0) + 1);
+      }
+      
+      // 가장 많이 나타나는 색상을 배경색으로 설정
+      let backgroundColor = '';
+      let maxCount = 0;
+      for (const [color, count] of colorCount) {
+        if (count > maxCount) {
+          maxCount = count;
+          backgroundColor = color;
+        }
+      }
+      
+      const [bgR, bgG, bgB] = backgroundColor.split(',').map(Number);
+      console.log('감지된 배경색:', backgroundColor);
       
       // 픽셀이 배경인지 확인하는 함수
       function isBackground(r, g, b) {
-        return r >= threshold && g >= threshold && b >= threshold;
+        // 배경색과의 차이가 30 이내면 배경으로 간주
+        const tolerance = 30;
+        return Math.abs(r - bgR) <= tolerance && 
+               Math.abs(g - bgG) <= tolerance && 
+               Math.abs(b - bgB) <= tolerance;
       }
       
-      // 행에 콘텐츠가 있는지 확인하는 함수
-      function hasContentInRow(row) {
-        let contentPixels = 0;
+      // 상하좌우 가장 끝에 있는 콘텐츠 픽셀 찾기
+      let top = height - 1;
+      let bottom = 0;
+      let left = width - 1;
+      let right = 0;
+      
+      // 모든 픽셀을 스캔하여 콘텐츠가 있는 가장 끝 위치 찾기
+      for (let row = 0; row < height; row++) {
         for (let col = 0; col < width; col++) {
           const idx = (row * width + col) * 4;
-          if (!isBackground(data[idx], data[idx + 1], data[idx + 2])) {
-            contentPixels++;
-          }
-        }
-        // 행의 5% 이상이 콘텐츠 픽셀이면 콘텐츠가 있다고 판단
-        return contentPixels > width * 0.05;
-      }
-      
-      // 열에 콘텐츠가 있는지 확인하는 함수
-      function hasContentInCol(col) {
-        let contentPixels = 0;
-        for (let row = 0; row < height; row++) {
-          const idx = (row * width + col) * 4;
-          if (!isBackground(data[idx], data[idx + 1], data[idx + 2])) {
-            contentPixels++;
-          }
-        }
-        // 열의 5% 이상이 콘텐츠 픽셀이면 콘텐츠가 있다고 판단
-        return contentPixels > height * 0.05;
-      }
-      
-      // 위에서부터 스캔
-      let top = 0;
-      for (let row = 0; row < height; row++) {
-        if (hasContentInRow(row)) {
-          top = Math.max(0, row - padding);
-          break;
-        }
-      }
-      
-      // 아래에서부터 스캔
-      let bottom = height - 1;
-      for (let row = height - 1; row >= 0; row--) {
-        if (hasContentInRow(row)) {
-          bottom = Math.min(height - 1, row + padding);
-          break;
-        }
-      }
-      
-      // 왼쪽에서부터 스캔
-      let left = 0;
-      for (let col = 0; col < width; col++) {
-        if (hasContentInCol(col)) {
-          left = Math.max(0, col - padding);
-          break;
-        }
-      }
-      
-      // 오른쪽에서부터 스캔
-      let right = width - 1;
-      for (let col = width - 1; col >= 0; col--) {
-        if (hasContentInCol(col)) {
-          right = Math.min(width - 1, col + padding);
-          break;
-        }
-      }
-      
-      // 문항 중간을 자르지 않도록 수평 구분선 감지
-      // 연속된 빈 행을 찾아 문항 경계 추정
-      const emptyRows = [];
-      for (let row = top; row <= bottom; row++) {
-        if (!hasContentInRow(row)) {
-          emptyRows.push(row);
-        }
-      }
-      
-      // 연속된 빈 행 그룹 찾기
-      if (emptyRows.length > 10) {
-        // 선택 영역 중앙 근처의 빈 공간 찾기
-        const centerY = (top + bottom) / 2;
-        let closestEmptyStart = -1;
-        let minDistance = height;
-        
-        for (let i = 0; i < emptyRows.length - 5; i++) {
-          // 연속된 빈 행이 5개 이상인 경우
-          if (emptyRows[i + 5] - emptyRows[i] === 5) {
-            const distance = Math.abs(emptyRows[i] - centerY);
-            if (distance < minDistance) {
-              minDistance = distance;
-              closestEmptyStart = emptyRows[i];
-            }
-          }
-        }
-        
-        // 중앙 근처에 충분한 빈 공간이 있으면 거기서 자르기
-        if (closestEmptyStart !== -1 && minDistance < height * 0.3) {
-          // 위쪽 또는 아래쪽 선택
-          if (closestEmptyStart < centerY) {
-            bottom = closestEmptyStart - 1;
-          } else {
-            top = closestEmptyStart + 5;
+          const r = data[idx];
+          const g = data[idx + 1];
+          const b = data[idx + 2];
+          
+          if (!isBackground(r, g, b)) {
+            // 콘텐츠 픽셀을 찾았을 때 경계 업데이트
+            top = Math.min(top, row);
+            bottom = Math.max(bottom, row);
+            left = Math.min(left, col);
+            right = Math.max(right, col);
           }
         }
       }
+      
+      // 콘텐츠를 찾지 못한 경우 원본 반환
+      if (top > bottom || left > right) {
+        console.log('콘텐츠를 찾지 못함');
+        return { x, y, width, height };
+      }
+      
+      // 여백 추가
+      top = Math.max(0, top - padding);
+      bottom = Math.min(height - 1, bottom + padding);
+      left = Math.max(0, left - padding);
+      right = Math.min(width - 1, right + padding);
       
       // 조정된 영역이 너무 작지 않도록 최소 크기 보장
       const adjustedWidth = right - left + 1;
       const adjustedHeight = bottom - top + 1;
       
-      if (adjustedWidth < 50 || adjustedHeight < 50) {
-        // 너무 작으면 원본 크기 유지
+      // 원본 대비 너무 작게 줄어들었는지 확인
+      const widthRatio = adjustedWidth / width;
+      const heightRatio = adjustedHeight / height;
+      
+      // 원본의 30% 미만으로 줄어들었으면 원본 크기 유지
+      if (widthRatio < 0.3 || heightRatio < 0.3) {
+        console.log('조정된 영역이 너무 작아 원본 크기 유지');
         return { x, y, width, height };
       }
+      
+      console.log(`경계 조정: top=${top}, bottom=${bottom}, left=${left}, right=${right}`);
+      console.log(`원본: ${width}x${height}, 조정 후: ${adjustedWidth}x${adjustedHeight}`);
       
       return {
         x: x + left,
