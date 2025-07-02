@@ -79,6 +79,7 @@
   let resizeStartPos = null;
   let originalSelection = null;
   let hoveredBlockId = null;
+  let selectedBlockId = null; // 선택된 블록 ID
   
   // 줌 관련 변수
   let zoomLevel = 1;
@@ -1076,9 +1077,6 @@
   function handleMouseDown(e) {
     if (!canvas) return;
     
-    // 자동 추출 모드에서는 리사이징만 가능
-    if (extractionMode === 'auto' && !isCheckingResize(e)) return;
-    
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
@@ -1117,6 +1115,31 @@
         }
       }
     }
+    
+    // 블록 내부 클릭으로 선택 (자동 추출 모드에서도 가능)
+    for (const block of selectedBlocks) {
+      if (block.page === currentPage && block.selection) {
+        const scaledX = block.selection.x * scaleRatio;
+        const scaledY = block.selection.y * scaleRatio;
+        const scaledWidth = block.selection.width * scaleRatio;
+        const scaledHeight = block.selection.height * scaleRatio;
+        
+        // 블록 내부 클릭 확인
+        if (mouseX >= scaledX && mouseX <= scaledX + scaledWidth &&
+            mouseY >= scaledY && mouseY <= scaledY + scaledHeight) {
+          // 선택된 블록 표시
+          selectedBlockId = block.id;
+          console.log('블록 선택됨:', block.title);
+          drawExistingBlocks();
+          e.preventDefault();
+          return;
+        }
+      }
+    }
+    
+    // 빈 영역 클릭 시 선택 해제
+    selectedBlockId = null;
+    drawExistingBlocks();
     
     // 수동 모드에서만 새 선택 시작
     if (extractionMode === 'manual') {
@@ -1253,6 +1276,7 @@
     let cursorSet = false;
     let newHoveredBlockId = null;
     
+    // 먼저 리사이징 핸들 체크
     for (const block of selectedBlocks) {
       if (block.page === currentPage && block.selection) {
         const scaledX = block.selection.x * scaleRatio;
@@ -1281,6 +1305,27 @@
       }
     }
     
+    // 리사이징 핸들이 아니면 블록 내부 체크
+    if (!cursorSet) {
+      for (const block of selectedBlocks) {
+        if (block.page === currentPage && block.selection) {
+          const scaledX = block.selection.x * scaleRatio;
+          const scaledY = block.selection.y * scaleRatio;
+          const scaledWidth = block.selection.width * scaleRatio;
+          const scaledHeight = block.selection.height * scaleRatio;
+          
+          // 블록 내부인지 확인
+          if (x >= scaledX && x <= scaledX + scaledWidth &&
+              y >= scaledY && y <= scaledY + scaledHeight) {
+            overlayCanvas.style.cursor = 'pointer';
+            newHoveredBlockId = block.id;
+            cursorSet = true;
+            break;
+          }
+        }
+      }
+    }
+    
     // 호버 상태 업데이트
     if (hoveredBlockId !== newHoveredBlockId) {
       hoveredBlockId = newHoveredBlockId;
@@ -1291,7 +1336,8 @@
     }
     
     if (!cursorSet) {
-      overlayCanvas.style.cursor = 'crosshair';
+      // 수동 모드에서는 십자선, 자동 모드에서는 기본 커서
+      overlayCanvas.style.cursor = extractionMode === 'manual' ? 'crosshair' : 'default';
     }
   }
   
@@ -1657,14 +1703,22 @@
         const scaledWidth = block.selection.width * scaleRatio;
         const scaledHeight = block.selection.height * scaleRatio;
         
-        // 체크된 블록은 더 진하게 표시
-        if (checkedBlocks.has(block.id)) {
-          overlayCtx.fillStyle = color + '30'; // 반투명 배경
+        // 선택된 블록은 더 강조
+        if (selectedBlockId === block.id) {
+          overlayCtx.fillStyle = color + '40'; // 더 진한 배경
           overlayCtx.fillRect(scaledX, scaledY, scaledWidth, scaledHeight);
+          overlayCtx.strokeStyle = color;
+          overlayCtx.lineWidth = 4;
+        } else if (checkedBlocks.has(block.id)) {
+          overlayCtx.fillStyle = color + '20'; // 반투명 배경
+          overlayCtx.fillRect(scaledX, scaledY, scaledWidth, scaledHeight);
+          overlayCtx.strokeStyle = color;
+          overlayCtx.lineWidth = 3;
+        } else {
+          overlayCtx.strokeStyle = color;
+          overlayCtx.lineWidth = 2;
         }
         
-        overlayCtx.strokeStyle = color;
-        overlayCtx.lineWidth = checkedBlocks.has(block.id) ? 3 : 2;
         overlayCtx.strokeRect(scaledX, scaledY, scaledWidth, scaledHeight);
         
         // 블록 번호 표시
@@ -1674,8 +1728,8 @@
         overlayCtx.font = 'bold 12px sans-serif';
         overlayCtx.fillText(block.title, scaledX + 5, scaledY - 8);
         
-        // 호버 시 리사이즈 핸들 그리기
-        if (hoveredBlockId === block.id || checkedBlocks.has(block.id)) {
+        // 호버 시나 선택된 블록에 리사이즈 핸들 그리기
+        if (hoveredBlockId === block.id || selectedBlockId === block.id || checkedBlocks.has(block.id)) {
           const handleSize = 8;
           const handles = [
             { x: scaledX, y: scaledY, type: 'nw' },
