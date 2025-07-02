@@ -541,433 +541,403 @@
     }
   }
   
-  // 문항 패턴 감지 함수 (레이아웃 분석 기반)
+  // 문항 패턴 감지 함수 (OpenCV 방식 구현)
   function detectQuestionPatterns(imageData, width, height) {
-    const areas = [];
-    const data = imageData.data;
+    console.log('문항 패턴 감지 시작...');
     
-    // 배경색 찾기 (가장 많은 색상)
-    const backgroundColor = findMostFrequentColor(data);
+    // 이진화된 이미지 생성
+    const binaryData = createBinaryImage(imageData, 240);
     
-    // 각 행의 콘텐츠 밀도 계산
-    const rowDensities = calculateRowDensities(data, width, height, backgroundColor);
+    // 형태학적 팽창을 적용하여 텍스트 라인 연결
+    const dilatedData = applyMorphologicalDilation(binaryData, width, height, 3);
     
-    // 레이아웃 타입 감지 (1열 또는 2열)
-    const layoutType = detectLayoutType(data, width, height, backgroundColor);
-    console.log(`감지된 레이아웃: ${layoutType}`);
+    // 컨투어 찾기 (연결된 컴포넌트 찾기)
+    const contours = findContours(dilatedData, width, height);
     
-    // 상단 헤더 영역 찾기 (보통 첫 10-15%)
-    const headerEnd = findHeaderEnd(rowDensities, height);
+    // 컨투어를 경계 사각형으로 변환
+    const boundingBoxes = contours.map(contour => getBoundingBox(contour));
     
-    // 레이아웃에 따라 다른 전략 사용
-    if (layoutType === '2-column') {
-      return detectTwoColumnQuestions(data, width, height, backgroundColor, rowDensities, headerEnd);
-    }
+    // Y좌표 기준으로 정렬
+    boundingBoxes.sort((a, b) => a.y - b.y);
     
-    // 기본은 1열 레이아웃으로 처리
-    // 콘텐츠가 시작하는 행 찾기
-    const contentStarts = findContentStarts(rowDensities, headerEnd);
+    // 너무 작은 영역 필터링 및 겹치는 영역 병합
+    const areas = mergeOverlappingBoxes(boundingBoxes).filter(box => 
+      box.width > 100 && box.height > 30
+    );
     
-    // 각 시작점에서 문항 영역 추정
-    for (let i = 0; i < contentStarts.length; i++) {
-      const startY = contentStarts[i];
-      let endY = contentStarts[i + 1] || height;
-      
-      // 실제 콘텐츠가 끝나는 지점 찾기 (아래에서 위로 스캔)
-      let actualEndY = endY;
-      for (let y = endY - 1; y > startY + 50; y--) {
-        if (rowDensities[y] > 10) {
-          actualEndY = y + 10; // 약간의 여백 추가
-          break;
-        }
-      }
-      endY = Math.min(endY, actualEndY);
-      
-      // 최소 높이 체크 (80px 이상)
-      if (endY - startY < 80) continue;
-      
-      // 왼쪽 여백과 오른쪽 여백 찾기
-      const bounds = findHorizontalBounds(data, width, startY, endY, backgroundColor);
-      
-      // 유효한 영역인지 확인
-      if (bounds.right - bounds.left > 100) {
-        // 빈 공간 분석으로 문항 분할
-        const midEmptyRows = findMidEmptyRows(rowDensities, startY, endY);
-        
-        if (midEmptyRows.length > 0) {
-          // 큰 빈 공간들을 기준으로 영역 분할
-          let currentStart = startY;
-          
-          for (const empty of midEmptyRows) {
-            // 빈 공간 전까지를 하나의 문항으로
-            if (empty.position - currentStart > 50) { // 최소 높이 체크
-              // 타이트한 경계 찾기
-              const tightBounds = findTightBounds(rowDensities, currentStart, empty.position);
-              if (tightBounds.bottom - tightBounds.top > 30) {
-                areas.push({
-                  x: bounds.left,
-                  y: tightBounds.top,
-                  width: bounds.right - bounds.left,
-                  height: tightBounds.bottom - tightBounds.top
-                });
-              }
-            }
-            
-            // 다음 문항의 시작점은 빈 공간 이후
-            currentStart = empty.position + empty.size;
-          }
-          
-          // 마지막 남은 부분 처리
-          if (endY - currentStart > 50) {
-            const tightBounds = findTightBounds(rowDensities, currentStart, endY);
-            if (tightBounds.bottom - tightBounds.top > 30) {
-              areas.push({
-                x: bounds.left,
-                y: tightBounds.top,
-                width: bounds.right - bounds.left,
-                height: tightBounds.bottom - tightBounds.top
-              });
-            }
-          }
-        } else {
-          // 빈 공간이 없으면 전체 영역에서 타이트한 경계 찾기
-          const tightBounds = findTightBounds(rowDensities, startY, endY);
-          if (tightBounds.bottom - tightBounds.top > 30) {
-            areas.push({
-              x: bounds.left,
-              y: tightBounds.top,
-              width: bounds.right - bounds.left,
-              height: tightBounds.bottom - tightBounds.top
-            });
-          }
-        }
-      }
-    }
-    
+    console.log(`${areas.length}개의 문항 영역 추출됨`);
     return areas;
   }
   
-  // 중간에 있는 큰 빈 공간 찾기 (개선된 버전)
-  function findMidEmptyRows(densities, startY, endY) {
-    const emptySpaces = [];
-    const threshold = 5; // 적절한 민감도
-    const pageHeight = densities.length;
-    // 페이지 높이에 비례한 최소 빈 공간 크기 (2% ~ 4%)
-    const minEmptySize = Math.max(25, Math.min(60, Math.floor(pageHeight * 0.025)));
+  // 이진화된 이미지 생성 (threshold 기준으로 흑백 변환)
+  function createBinaryImage(imageData, threshold) {
+    const data = imageData.data;
+    const binaryData = new Uint8Array(imageData.width * imageData.height);
     
-    let emptyStart = -1;
-    let emptyCount = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const gray = (data[i] + data[i + 1] + data[i + 2]) / 3;
+      const idx = i / 4;
+      // threshold보다 어두우면 1 (콘텐츠), 밝으면 0 (배경)
+      binaryData[idx] = gray < threshold ? 1 : 0;
+    }
     
-    // 시작과 끝 부분을 제외하고 스캔 (전체 영역의 10% 제외)
-    const scanStart = startY + Math.floor((endY - startY) * 0.1);
-    const scanEnd = endY - Math.floor((endY - startY) * 0.1);
+    return binaryData;
+  }
+  
+  // 수직 밀도 계산 (각 행의 콘텐츠 픽셀 수)
+  function calculateVerticalDensity(binaryData, width, height) {
+    const density = new Float32Array(height);
     
-    for (let y = scanStart; y < scanEnd; y++) {
-      if (densities[y] < threshold) {
-        if (emptyStart === -1) {
-          emptyStart = y;
+    for (let y = 0; y < height; y++) {
+      let count = 0;
+      for (let x = 0; x < width; x++) {
+        if (binaryData[y * width + x]) {
+          count++;
         }
-        emptyCount++;
+      }
+      density[y] = count;
+    }
+    
+    return density;
+  }
+  
+  // 수직 공백 영역 찾기
+  function findVerticalGaps(density, height) {
+    const gaps = [];
+    const minGapSize = Math.max(20, Math.floor(height * 0.02)); // 최소 공백 크기
+    const threshold = 5; // 행에 5개 미만의 픽셀만 있으면 빈 행으로 간주
+    
+    let gapStart = -1;
+    
+    for (let y = 0; y < height; y++) {
+      if (density[y] < threshold) {
+        if (gapStart === -1) {
+          gapStart = y;
+        }
       } else {
-        if (emptyCount > minEmptySize) {
-          // 빈 공간의 시작점을 저장 (중간이 아닌 시작점)
-          emptySpaces.push({
-            position: emptyStart,
-            size: emptyCount
-          });
+        if (gapStart !== -1) {
+          const gapSize = y - gapStart;
+          if (gapSize >= minGapSize) {
+            gaps.push({
+              start: gapStart,
+              end: y,
+              size: gapSize,
+              center: Math.floor(gapStart + gapSize / 2)
+            });
+          }
+          gapStart = -1;
         }
-        emptyStart = -1;
-        emptyCount = 0;
       }
     }
     
-    // 마지막 빈 공간 체크
-    if (emptyCount > minEmptySize) {
-      emptySpaces.push({
-        position: emptyStart,
-        size: emptyCount
+    // 마지막 공백 처리
+    if (gapStart !== -1 && height - gapStart >= minGapSize) {
+      gaps.push({
+        start: gapStart,
+        end: height,
+        size: height - gapStart,
+        center: Math.floor(gapStart + (height - gapStart) / 2)
       });
     }
     
-    return emptySpaces;
+    return gaps;
   }
   
-  // 타이트한 경계 찾기 (수동 지정처럼 깔끔하게)
-  function findTightBounds(densities, startY, endY) {
-    const threshold = 8; // 콘텐츠 판단 임계값
-    const padding = 8; // 여백
+  // 공백을 기준으로 영역 분할
+  function splitByGaps(gaps, height) {
+    const regions = [];
+    let lastEnd = 0;
     
-    // 위에서부터 실제 콘텐츠 시작점 찾기
-    let actualTop = startY;
-    for (let y = startY; y < endY; y++) {
-      if (densities[y] >= threshold) {
-        actualTop = Math.max(startY, y - padding);
-        break;
-      }
+    // 첫 공백 전까지
+    if (gaps.length > 0 && gaps[0].start > 50) {
+      regions.push({ start: 0, end: gaps[0].start });
     }
     
-    // 아래에서부터 실제 콘텐츠 끝점 찾기
-    let actualBottom = endY;
-    for (let y = endY - 1; y >= startY; y--) {
-      if (densities[y] >= threshold) {
-        actualBottom = Math.min(endY, y + padding);
-        break;
-      }
-    }
-    
-    return {
-      top: actualTop,
-      bottom: actualBottom
-    };
-  }
-  
-  // 레이아웃 타입 감지 (1열 또는 2열)
-  function detectLayoutType(data, width, height, bgColor) {
-    // 중앙 부분의 수직선 감지로 2열 레이아웃 확인
-    const centerX = Math.floor(width / 2);
-    const tolerance = 50; // 중앙에서 ±50px 범위
-    let verticalLineScore = 0;
-    
-    // 페이지 중간 부분 스캔 (상하 20% 제외)
-    const scanStart = Math.floor(height * 0.2);
-    const scanEnd = Math.floor(height * 0.8);
-    
-    for (let x = centerX - tolerance; x <= centerX + tolerance; x++) {
-      let emptyPixels = 0;
-      for (let y = scanStart; y < scanEnd; y += 10) {
-        const idx = (y * width + x) * 4;
-        if (isBackgroundPixel(data[idx], data[idx+1], data[idx+2], bgColor)) {
-          emptyPixels++;
-        }
-      }
-      // 해당 열이 대부분 비어있으면 수직 구분선으로 간주
-      if (emptyPixels > (scanEnd - scanStart) / 10 * 0.8) {
-        verticalLineScore++;
-      }
-    }
-    
-    // 중앙에 수직 빈 공간이 충분히 있으면 2열 레이아웃
-    return verticalLineScore > tolerance ? '2-column' : '1-column';
-  }
-  
-  // 상단 헤더 영역 끝 찾기
-  function findHeaderEnd(densities, height) {
-    // 상단 15% 이내에서 큰 빈 공간 찾기
-    const headerLimit = Math.floor(height * 0.15);
-    let emptyCount = 0;
-    
-    for (let y = 0; y < headerLimit; y++) {
-      if (densities[y] < 5) {
-        emptyCount++;
-        // 연속된 빈 공간이 20px 이상이면 헤더 끝으로 간주
-        if (emptyCount > 20) {
-          return y;
-        }
-      } else {
-        emptyCount = 0;
-      }
-    }
-    
-    return 0; // 헤더가 없으면 0
-  }
-  
-  // 배경 픽셀인지 확인
-  function isBackgroundPixel(r, g, b, bgColor) {
-    const tolerance = 30;
-    return Math.abs(r - bgColor[0]) <= tolerance && 
-           Math.abs(g - bgColor[1]) <= tolerance && 
-           Math.abs(b - bgColor[2]) <= tolerance;
-  }
-  
-  // 2열 레이아웃 문항 감지
-  function detectTwoColumnQuestions(data, width, height, bgColor, densities, headerEnd) {
-    const areas = [];
-    const centerX = Math.floor(width / 2);
-    
-    // 왼쪽 열 처리
-    const leftBounds = { left: 20, right: centerX - 20 };
-    const leftAreas = detectSingleColumnQuestions(data, width, height, bgColor, densities, headerEnd, leftBounds);
-    
-    // 오른쪽 열 처리
-    const rightBounds = { left: centerX + 20, right: width - 20 };
-    const rightAreas = detectSingleColumnQuestions(data, width, height, bgColor, densities, headerEnd, rightBounds);
-    
-    return [...leftAreas, ...rightAreas];
-  }
-  
-  // 단일 열에서 문항 감지 (공통 로직)
-  function detectSingleColumnQuestions(data, width, height, bgColor, densities, startY, columnBounds) {
-    const areas = [];
-    const contentStarts = findContentStarts(densities, startY);
-    
-    for (let i = 0; i < contentStarts.length; i++) {
-      const startY = contentStarts[i];
-      let endY = contentStarts[i + 1] || height;
+    // 공백 사이 영역들
+    for (let i = 0; i < gaps.length - 1; i++) {
+      const regionStart = gaps[i].end;
+      const regionEnd = gaps[i + 1].start;
       
-      // 실제 콘텐츠가 끝나는 지점 찾기
-      let actualEndY = endY;
-      for (let y = endY - 1; y > startY + 50; y--) {
-        if (densities[y] > 10) {
-          actualEndY = y + 10;
+      if (regionEnd - regionStart > 50) { // 최소 높이
+        regions.push({ start: regionStart, end: regionEnd });
+      }
+    }
+    
+    // 마지막 공백 후
+    if (gaps.length > 0) {
+      const lastGap = gaps[gaps.length - 1];
+      if (height - lastGap.end > 50) {
+        regions.push({ start: lastGap.end, end: height });
+      }
+    } else {
+      // 공백이 없으면 전체를 하나의 영역으로
+      regions.push({ start: 0, end: height });
+    }
+    
+    return regions;
+  }
+  
+  // 콘텐츠에 맞게 영역 조정
+  function fitToContent(imageData, x, y, width, height) {
+    const data = imageData.data;
+    const threshold = 240;
+    const padding = 10;
+    
+    let minX = width, maxX = 0;
+    let minY = height, maxY = 0;
+    let hasContent = false;
+    
+    // 실제 콘텐츠가 있는 경계 찾기
+    for (let py = 0; py < height; py++) {
+      for (let px = 0; px < width; px += 5) { // 샘플링으로 속도 향상
+        const idx = ((y + py) * imageData.width + (x + px)) * 4;
+        const gray = (data[idx] + data[idx + 1] + data[idx + 2]) / 3;
+        
+        if (gray < threshold) { // 콘텐츠 픽셀
+          minX = Math.min(minX, px);
+          maxX = Math.max(maxX, px);
+          minY = Math.min(minY, py);
+          maxY = Math.max(maxY, py);
+          hasContent = true;
+        }
+      }
+    }
+    
+    if (!hasContent) {
+      return { x, y, width: 0, height: 0 };
+    }
+    
+    // 좌우 경계 더 정확히 찾기
+    for (let px = minX; px >= 0; px--) {
+      let hasContentInCol = false;
+      for (let py = minY; py <= maxY; py += 10) {
+        const idx = ((y + py) * imageData.width + (x + px)) * 4;
+        const gray = (data[idx] + data[idx + 1] + data[idx + 2]) / 3;
+        if (gray < threshold) {
+          hasContentInCol = true;
           break;
         }
       }
-      endY = Math.min(endY, actualEndY);
-      
-      if (endY - startY < 50) continue;
-      
-      // 타이트한 경계 찾기
-      const tightBounds = findTightBounds(densities, startY, endY);
-      
-      if (tightBounds.bottom - tightBounds.top > 30) {
-        areas.push({
-          x: columnBounds.left,
-          y: tightBounds.top,
-          width: columnBounds.right - columnBounds.left,
-          height: tightBounds.bottom - tightBounds.top
-        });
+      if (hasContentInCol) {
+        minX = px;
+      } else {
+        break;
       }
     }
     
-    return areas;
-  }
-  
-  // 가장 많이 나타나는 색상 찾기 (배경색)
-  function findMostFrequentColor(data) {
-    const colorCount = new Map();
-    const sampleRate = 100; // 성능을 위해 100픽셀마다 샘플링
-    
-    for (let i = 0; i < data.length; i += 4 * sampleRate) {
-      const r = Math.round(data[i] / 10) * 10;
-      const g = Math.round(data[i + 1] / 10) * 10;
-      const b = Math.round(data[i + 2] / 10) * 10;
-      const colorStr = `${r},${g},${b}`;
-      colorCount.set(colorStr, (colorCount.get(colorStr) || 0) + 1);
-    }
-    
-    let maxColor = '250,250,250'; // 기본값 (흰색)
-    let maxCount = 0;
-    for (const [color, count] of colorCount) {
-      if (count > maxCount) {
-        maxCount = count;
-        maxColor = color;
-      }
-    }
-    
-    return maxColor.split(',').map(Number);
-  }
-  
-  // 각 행의 콘텐츠 밀도 계산 (최적화된 버전)
-  function calculateRowDensities(data, width, height, bgColor) {
-    const densities = new Float32Array(height);
-    const tolerance = 30;
-    const sampleStep = 10; // 더 큰 샘플링 간격
-    
-    // 배경색 RGB 값을 미리 계산
-    const bgR = bgColor[0];
-    const bgG = bgColor[1];
-    const bgB = bgColor[2];
-    
-    // 각 행을 병렬적으로 처리할 수 있도록 준비
-    for (let y = 0; y < height; y++) {
-      let contentPixels = 0;
-      const rowStart = y * width * 4;
-      
-      // 샘플링하여 성능 향상
-      for (let x = 0; x < width; x += sampleStep) {
-        const idx = rowStart + (x * 4);
-        
-        // 배경색과의 차이를 빠르게 계산
-        if (Math.abs(data[idx] - bgR) > tolerance || 
-            Math.abs(data[idx + 1] - bgG) > tolerance || 
-            Math.abs(data[idx + 2] - bgB) > tolerance) {
-          contentPixels++;
+    for (let px = maxX; px < width; px++) {
+      let hasContentInCol = false;
+      for (let py = minY; py <= maxY; py += 10) {
+        const idx = ((y + py) * imageData.width + (x + px)) * 4;
+        const gray = (data[idx] + data[idx + 1] + data[idx + 2]) / 3;
+        if (gray < threshold) {
+          hasContentInCol = true;
+          break;
         }
       }
-      
-      densities[y] = contentPixels;
+      if (hasContentInCol) {
+        maxX = px;
+      } else {
+        break;
+      }
     }
     
-    return densities;
+    return {
+      x: x + Math.max(0, minX - padding),
+      y: y + Math.max(0, minY - padding),
+      width: Math.min(width, maxX - minX + 2 * padding),
+      height: Math.min(height, maxY - minY + 2 * padding)
+    };
   }
   
-  // 콘텐츠 시작 지점 찾기 (개선된 버전)
-  function findContentStarts(densities, startFromY = 0) {
-    const starts = [];
-    const threshold = 10; // 최소 콘텐츠 픽셀 수
-    const pageHeight = densities.length;
+  // 형태학적 팽창 (Morphological Dilation) - 텍스트 라인 연결
+  function applyMorphologicalDilation(binaryData, width, height, kernelSize) {
+    const dilated = new Uint8Array(binaryData.length);
+    const halfKernel = Math.floor(kernelSize / 2);
     
-    // 페이지 높이에 따른 동적 임계값
-    const emptyRowsThreshold = Math.max(20, Math.min(60, Math.floor(pageHeight * 0.025)));
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        let hasContent = false;
+        
+        // 커널 범위 내에서 콘텐츠 픽셀 확인
+        for (let ky = -halfKernel; ky <= halfKernel; ky++) {
+          for (let kx = -halfKernel; kx <= halfKernel; kx++) {
+            const ny = y + ky;
+            const nx = x + kx;
+            
+            if (ny >= 0 && ny < height && nx >= 0 && nx < width) {
+              if (binaryData[ny * width + nx]) {
+                hasContent = true;
+                break;
+              }
+            }
+          }
+          if (hasContent) break;
+        }
+        
+        dilated[y * width + x] = hasContent ? 1 : 0;
+      }
+    }
     
-    // 연속된 콘텐츠 영역 찾기
-    let inContent = false;
-    let emptyRowCount = 0;
-    let contentStarted = -1;
+    return dilated;
+  }
+  
+  // 컨투어 찾기 (Connected Component Analysis)
+  function findContours(binaryData, width, height) {
+    const visited = new Uint8Array(binaryData.length);
+    const contours = [];
     
-    for (let i = startFromY; i < densities.length; i++) {
-      const hasContent = densities[i] >= threshold;
+    // 8방향 이웃
+    const directions = [
+      [-1, -1], [-1, 0], [-1, 1],
+      [0, -1],           [0, 1],
+      [1, -1],  [1, 0],  [1, 1]
+    ];
+    
+    // Flood fill을 사용한 연결된 컴포넌트 찾기
+    function floodFill(startX, startY) {
+      const points = [];
+      const stack = [[startX, startY]];
       
-      if (hasContent) {
-        if (!inContent) {
-          // 새로운 콘텐츠 영역 시작
-          if (emptyRowCount > emptyRowsThreshold || i === 0) {
-            contentStarted = i;
-            inContent = true;
-            starts.push(i);
+      while (stack.length > 0) {
+        const [x, y] = stack.pop();
+        const idx = y * width + x;
+        
+        if (visited[idx] || !binaryData[idx]) continue;
+        
+        visited[idx] = 1;
+        points.push({x, y});
+        
+        // 이웃 픽셀 확인
+        for (const [dx, dy] of directions) {
+          const nx = x + dx;
+          const ny = y + dy;
+          
+          if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+            const nidx = ny * width + nx;
+            if (!visited[nidx] && binaryData[nidx]) {
+              stack.push([nx, ny]);
+            }
           }
         }
-        emptyRowCount = 0;
-      } else {
-        emptyRowCount++;
-        
-        // 긴 빈 공간이 나타나면 콘텐츠 영역 종료
-        if (inContent && emptyRowCount > emptyRowsThreshold * 0.5) {
-          inContent = false;
+      }
+      
+      return points;
+    }
+    
+    // 모든 픽셀 스캔
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x;
+        if (!visited[idx] && binaryData[idx]) {
+          const contour = floodFill(x, y);
+          if (contour.length > 50) { // 최소 크기 필터
+            contours.push(contour);
+          }
         }
       }
     }
     
-    // 시작점이 너무 많으면 필터링 (너무 가까운 것들 제거)
-    const filteredStarts = [];
-    for (let i = 0; i < starts.length; i++) {
-      if (i === 0 || starts[i] - starts[i-1] > emptyRowsThreshold * 2) {
-        filteredStarts.push(starts[i]);
-      }
-    }
-    
-    return filteredStarts;
+    return contours;
   }
   
-  // 수평 경계 찾기
-  function findHorizontalBounds(data, width, startY, endY, bgColor) {
-    const tolerance = 30;
-    let left = width;
-    let right = 0;
+  // 컨투어에서 경계 사각형 추출
+  function getBoundingBox(contour) {
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
     
-    // 영역 내에서 가장 왼쪽과 오른쪽 콘텐츠 픽셀 찾기
-    for (let y = startY; y < Math.min(endY, startY + 200); y += 5) { // 상단 200px만 확인
-      for (let x = 0; x < width; x++) {
-        const idx = (y * width + x) * 4;
-        const r = data[idx];
-        const g = data[idx + 1];
-        const b = data[idx + 2];
+    for (const point of contour) {
+      minX = Math.min(minX, point.x);
+      maxX = Math.max(maxX, point.x);
+      minY = Math.min(minY, point.y);
+      maxY = Math.max(maxY, point.y);
+    }
+    
+    const padding = 10;
+    return {
+      x: Math.max(0, minX - padding),
+      y: Math.max(0, minY - padding),
+      width: maxX - minX + 2 * padding,
+      height: maxY - minY + 2 * padding
+    };
+  }
+  
+  // 겹치는 박스 병합
+  function mergeOverlappingBoxes(boxes) {
+    if (boxes.length === 0) return [];
+    
+    const merged = [];
+    let currentBox = {...boxes[0]};
+    
+    for (let i = 1; i < boxes.length; i++) {
+      const box = boxes[i];
+      
+      // 두 박스가 겹치거나 가까이 있는지 확인
+      const overlapY = currentBox.y + currentBox.height + 20 > box.y;
+      const overlapX = !(box.x > currentBox.x + currentBox.width || 
+                         box.x + box.width < currentBox.x);
+      
+      if (overlapY && overlapX) {
+        // 병합
+        const minX = Math.min(currentBox.x, box.x);
+        const minY = Math.min(currentBox.y, box.y);
+        const maxX = Math.max(currentBox.x + currentBox.width, box.x + box.width);
+        const maxY = Math.max(currentBox.y + currentBox.height, box.y + box.height);
         
-        if (Math.abs(r - bgColor[0]) > tolerance || 
-            Math.abs(g - bgColor[1]) > tolerance || 
-            Math.abs(b - bgColor[2]) > tolerance) {
-          left = Math.min(left, x);
-          right = Math.max(right, x);
-        }
+        currentBox = {
+          x: minX,
+          y: minY,
+          width: maxX - minX,
+          height: maxY - minY
+        };
+      } else {
+        // 현재 박스 저장하고 새로운 박스 시작
+        merged.push(currentBox);
+        currentBox = {...box};
       }
     }
     
-    // 여백 추가
-    const padding = 20;
-    return {
-      left: Math.max(0, left - padding),
-      right: Math.min(width, right + padding)
+    // 마지막 박스 저장
+    merged.push(currentBox);
+    
+    return merged;
+  }
+  
+  // 큰 영역을 여러 문항으로 자동 분할
+  function splitLargeRegion(imageData, region) {
+    const regionWidth = region.width;
+    const regionHeight = region.height;
+    
+    // 영역 내의 이미지 데이터 추출
+    const regionImageData = {
+      data: new Uint8ClampedArray(regionWidth * regionHeight * 4),
+      width: regionWidth,
+      height: regionHeight
     };
+    
+    // 영역 복사
+    for (let y = 0; y < regionHeight; y++) {
+      for (let x = 0; x < regionWidth; x++) {
+        const srcIdx = ((region.y + y) * imageData.width + (region.x + x)) * 4;
+        const dstIdx = (y * regionWidth + x) * 4;
+        
+        regionImageData.data[dstIdx] = imageData.data[srcIdx];
+        regionImageData.data[dstIdx + 1] = imageData.data[srcIdx + 1];
+        regionImageData.data[dstIdx + 2] = imageData.data[srcIdx + 2];
+        regionImageData.data[dstIdx + 3] = imageData.data[srcIdx + 3];
+      }
+    }
+    
+    // 영역 내에서 문항 패턴 감지
+    const subRegions = detectQuestionPatterns(regionImageData, regionWidth, regionHeight);
+    
+    // 원본 좌표로 변환
+    return subRegions.map(sub => ({
+      x: region.x + sub.x,
+      y: region.y + sub.y,
+      width: sub.width,
+      height: sub.height
+    }));
   }
   
   // 영역 선택 모드 토글
@@ -1312,98 +1282,54 @@
     localStorage.setItem(`block-selections-${selectedMaterial.id}`, JSON.stringify(selections));
   }
   
-  // 콘텐츠 경계 자동 감지 함수
+  // 콘텐츠 경계 자동 감지 함수 (컨투어 기반)
   function findContentBoundaries(x, y, width, height) {
     if (!ctx || !canvas) return { x, y, width, height };
     
     try {
       // 선택 영역의 이미지 데이터 가져오기
       const imageData = ctx.getImageData(x, y, width, height);
-      const data = imageData.data;
-      const padding = 10; // 최소 여백
       
-      // 색상을 문자열로 변환하는 함수 (비교를 위해)
-      function colorToString(r, g, b) {
-        // 10단위로 반올림하여 유사한 색상을 그룹화
-        const roundedR = Math.round(r / 10) * 10;
-        const roundedG = Math.round(g / 10) * 10;
-        const roundedB = Math.round(b / 10) * 10;
-        return `${roundedR},${roundedG},${roundedB}`;
+      // 이진화
+      const binaryData = createBinaryImage(imageData, 240);
+      
+      // 형태학적 팽창 적용 (텍스트 라인 연결)
+      const dilatedData = applyMorphologicalDilation(binaryData, width, height, 2);
+      
+      // 컨투어 찾기
+      const contours = findContours(dilatedData, width, height);
+      
+      if (contours.length === 0) {
+        return { x, y, width: 0, height: 0 };
       }
       
-      // 가장 많이 나타나는 색상 찾기 (배경색으로 간주)
-      const colorCount = new Map();
-      const sampleRate = 10; // 성능을 위해 10픽셀마다 샘플링
+      // 모든 컨투어를 포함하는 경계 상자 찾기
+      let minX = width, maxX = 0;
+      let minY = height, maxY = 0;
       
-      for (let i = 0; i < data.length; i += 4 * sampleRate) {
-        const r = data[i];
-        const g = data[i + 1];
-        const b = data[i + 2];
-        const colorStr = colorToString(r, g, b);
-        colorCount.set(colorStr, (colorCount.get(colorStr) || 0) + 1);
-      }
-      
-      // 가장 많이 나타나는 색상을 배경색으로 설정
-      let backgroundColor = '';
-      let maxCount = 0;
-      for (const [color, count] of colorCount) {
-        if (count > maxCount) {
-          maxCount = count;
-          backgroundColor = color;
+      for (const contour of contours) {
+        for (const point of contour) {
+          minX = Math.min(minX, point.x);
+          maxX = Math.max(maxX, point.x);
+          minY = Math.min(minY, point.y);
+          maxY = Math.max(maxY, point.y);
         }
       }
       
-      const [bgR, bgG, bgB] = backgroundColor.split(',').map(Number);
-      console.log('감지된 배경색:', backgroundColor);
-      
-      // 픽셀이 배경인지 확인하는 함수
-      function isBackground(r, g, b) {
-        // 배경색과의 차이가 30 이내면 배경으로 간주
-        const tolerance = 30;
-        return Math.abs(r - bgR) <= tolerance && 
-               Math.abs(g - bgG) <= tolerance && 
-               Math.abs(b - bgB) <= tolerance;
-      }
-      
-      // 상하좌우 가장 끝에 있는 콘텐츠 픽셀 찾기
-      let top = height - 1;
-      let bottom = 0;
-      let left = width - 1;
-      let right = 0;
-      
-      // 모든 픽셀을 스캔하여 콘텐츠가 있는 가장 끝 위치 찾기
-      for (let row = 0; row < height; row++) {
-        for (let col = 0; col < width; col++) {
-          const idx = (row * width + col) * 4;
-          const r = data[idx];
-          const g = data[idx + 1];
-          const b = data[idx + 2];
-          
-          if (!isBackground(r, g, b)) {
-            // 콘텐츠 픽셀을 찾았을 때 경계 업데이트
-            top = Math.min(top, row);
-            bottom = Math.max(bottom, row);
-            left = Math.min(left, col);
-            right = Math.max(right, col);
-          }
-        }
-      }
+      // 패딩 추가
+      const padding = 10;
       
       // 콘텐츠를 찾지 못한 경우 원본 반환
-      if (top > bottom || left > right) {
+      if (minX > maxX || minY > maxY) {
         console.log('콘텐츠를 찾지 못함');
         return { x, y, width, height };
       }
       
-      // 여백 추가
-      top = Math.max(0, top - padding);
-      bottom = Math.min(height - 1, bottom + padding);
-      left = Math.max(0, left - padding);
-      right = Math.min(width - 1, right + padding);
-      
-      // 조정된 영역이 너무 작지 않도록 최소 크기 보장
-      const adjustedWidth = right - left + 1;
-      const adjustedHeight = bottom - top + 1;
+      // 조정된 영역 계산
+      const adjustedX = Math.max(0, minX - padding);
+      const adjustedY = Math.max(0, minY - padding);
+      const adjustedWidth = Math.min(width, maxX - minX + 2 * padding);
+      const adjustedHeight = Math.min(height, maxY - minY + 2 * padding);
       
       // 원본 대비 너무 작게 줄어들었는지 확인
       const widthRatio = adjustedWidth / width;
@@ -1415,12 +1341,11 @@
         return { x, y, width, height };
       }
       
-      console.log(`경계 조정: top=${top}, bottom=${bottom}, left=${left}, right=${right}`);
-      console.log(`원본: ${width}x${height}, 조정 후: ${adjustedWidth}x${adjustedHeight}`);
+      console.log(`컨투어 기반 경계 조정: ${adjustedWidth}x${adjustedHeight}`);
       
       return {
-        x: x + left,
-        y: y + top,
+        x: x + adjustedX,
+        y: y + adjustedY,
         width: adjustedWidth,
         height: adjustedHeight
       };
