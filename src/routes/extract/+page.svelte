@@ -541,7 +541,7 @@
     }
   }
   
-  // 문항 패턴 감지 함수 (개선된 버전)
+  // 문항 패턴 감지 함수 (레이아웃 분석 기반)
   function detectQuestionPatterns(imageData, width, height) {
     const areas = [];
     const data = imageData.data;
@@ -552,8 +552,21 @@
     // 각 행의 콘텐츠 밀도 계산
     const rowDensities = calculateRowDensities(data, width, height, backgroundColor);
     
+    // 레이아웃 타입 감지 (1열 또는 2열)
+    const layoutType = detectLayoutType(data, width, height, backgroundColor);
+    console.log(`감지된 레이아웃: ${layoutType}`);
+    
+    // 상단 헤더 영역 찾기 (보통 첫 10-15%)
+    const headerEnd = findHeaderEnd(rowDensities, height);
+    
+    // 레이아웃에 따라 다른 전략 사용
+    if (layoutType === '2-column') {
+      return detectTwoColumnQuestions(data, width, height, backgroundColor, rowDensities, headerEnd);
+    }
+    
+    // 기본은 1열 레이아웃으로 처리
     // 콘텐츠가 시작하는 행 찾기
-    const contentStarts = findContentStarts(rowDensities);
+    const contentStarts = findContentStarts(rowDensities, headerEnd);
     
     // 각 시작점에서 문항 영역 추정
     for (let i = 0; i < contentStarts.length; i++) {
@@ -708,6 +721,117 @@
     };
   }
   
+  // 레이아웃 타입 감지 (1열 또는 2열)
+  function detectLayoutType(data, width, height, bgColor) {
+    // 중앙 부분의 수직선 감지로 2열 레이아웃 확인
+    const centerX = Math.floor(width / 2);
+    const tolerance = 50; // 중앙에서 ±50px 범위
+    let verticalLineScore = 0;
+    
+    // 페이지 중간 부분 스캔 (상하 20% 제외)
+    const scanStart = Math.floor(height * 0.2);
+    const scanEnd = Math.floor(height * 0.8);
+    
+    for (let x = centerX - tolerance; x <= centerX + tolerance; x++) {
+      let emptyPixels = 0;
+      for (let y = scanStart; y < scanEnd; y += 10) {
+        const idx = (y * width + x) * 4;
+        if (isBackgroundPixel(data[idx], data[idx+1], data[idx+2], bgColor)) {
+          emptyPixels++;
+        }
+      }
+      // 해당 열이 대부분 비어있으면 수직 구분선으로 간주
+      if (emptyPixels > (scanEnd - scanStart) / 10 * 0.8) {
+        verticalLineScore++;
+      }
+    }
+    
+    // 중앙에 수직 빈 공간이 충분히 있으면 2열 레이아웃
+    return verticalLineScore > tolerance ? '2-column' : '1-column';
+  }
+  
+  // 상단 헤더 영역 끝 찾기
+  function findHeaderEnd(densities, height) {
+    // 상단 15% 이내에서 큰 빈 공간 찾기
+    const headerLimit = Math.floor(height * 0.15);
+    let emptyCount = 0;
+    
+    for (let y = 0; y < headerLimit; y++) {
+      if (densities[y] < 5) {
+        emptyCount++;
+        // 연속된 빈 공간이 20px 이상이면 헤더 끝으로 간주
+        if (emptyCount > 20) {
+          return y;
+        }
+      } else {
+        emptyCount = 0;
+      }
+    }
+    
+    return 0; // 헤더가 없으면 0
+  }
+  
+  // 배경 픽셀인지 확인
+  function isBackgroundPixel(r, g, b, bgColor) {
+    const tolerance = 30;
+    return Math.abs(r - bgColor[0]) <= tolerance && 
+           Math.abs(g - bgColor[1]) <= tolerance && 
+           Math.abs(b - bgColor[2]) <= tolerance;
+  }
+  
+  // 2열 레이아웃 문항 감지
+  function detectTwoColumnQuestions(data, width, height, bgColor, densities, headerEnd) {
+    const areas = [];
+    const centerX = Math.floor(width / 2);
+    
+    // 왼쪽 열 처리
+    const leftBounds = { left: 20, right: centerX - 20 };
+    const leftAreas = detectSingleColumnQuestions(data, width, height, bgColor, densities, headerEnd, leftBounds);
+    
+    // 오른쪽 열 처리
+    const rightBounds = { left: centerX + 20, right: width - 20 };
+    const rightAreas = detectSingleColumnQuestions(data, width, height, bgColor, densities, headerEnd, rightBounds);
+    
+    return [...leftAreas, ...rightAreas];
+  }
+  
+  // 단일 열에서 문항 감지 (공통 로직)
+  function detectSingleColumnQuestions(data, width, height, bgColor, densities, startY, columnBounds) {
+    const areas = [];
+    const contentStarts = findContentStarts(densities, startY);
+    
+    for (let i = 0; i < contentStarts.length; i++) {
+      const startY = contentStarts[i];
+      let endY = contentStarts[i + 1] || height;
+      
+      // 실제 콘텐츠가 끝나는 지점 찾기
+      let actualEndY = endY;
+      for (let y = endY - 1; y > startY + 50; y--) {
+        if (densities[y] > 10) {
+          actualEndY = y + 10;
+          break;
+        }
+      }
+      endY = Math.min(endY, actualEndY);
+      
+      if (endY - startY < 50) continue;
+      
+      // 타이트한 경계 찾기
+      const tightBounds = findTightBounds(densities, startY, endY);
+      
+      if (tightBounds.bottom - tightBounds.top > 30) {
+        areas.push({
+          x: columnBounds.left,
+          y: tightBounds.top,
+          width: columnBounds.right - columnBounds.left,
+          height: tightBounds.bottom - tightBounds.top
+        });
+      }
+    }
+    
+    return areas;
+  }
+  
   // 가장 많이 나타나는 색상 찾기 (배경색)
   function findMostFrequentColor(data) {
     const colorCount = new Map();
@@ -768,7 +892,7 @@
   }
   
   // 콘텐츠 시작 지점 찾기 (개선된 버전)
-  function findContentStarts(densities) {
+  function findContentStarts(densities, startFromY = 0) {
     const starts = [];
     const threshold = 10; // 최소 콘텐츠 픽셀 수
     const pageHeight = densities.length;
@@ -781,7 +905,7 @@
     let emptyRowCount = 0;
     let contentStarted = -1;
     
-    for (let i = 0; i < densities.length; i++) {
+    for (let i = startFromY; i < densities.length; i++) {
       const hasContent = densities[i] >= threshold;
       
       if (hasContent) {
