@@ -1127,16 +1127,24 @@
         // 블록 내부 클릭 확인
         if (mouseX >= scaledX && mouseX <= scaledX + scaledWidth &&
             mouseY >= scaledY && mouseY <= scaledY + scaledHeight) {
-          // 선택된 블록 표시
-          selectedBlockId = block.id;
-          
-          // 체크박스도 자동으로 체크
-          if (!checkedBlocks.has(block.id)) {
-            checkedBlocks.add(block.id);
+          // 이미 선택된 블록이면 체크박스만 토글
+          if (selectedBlockId === block.id) {
+            if (!checkedBlocks.has(block.id)) {
+              checkedBlocks.add(block.id);
+            } else {
+              checkedBlocks.delete(block.id);
+            }
+            checkedBlocks = new Set(checkedBlocks); // 반응성 트리거
           } else {
-            checkedBlocks.delete(block.id);
+            // 새로 선택하는 경우
+            selectedBlockId = block.id;
+            
+            // 체크박스도 자동으로 체크
+            if (!checkedBlocks.has(block.id)) {
+              checkedBlocks.add(block.id);
+            }
+            checkedBlocks = new Set(checkedBlocks); // 반응성 트리거
           }
-          checkedBlocks = new Set(checkedBlocks); // 반응성 트리거
           
           console.log('블록 선택됨:', block.title);
           drawExistingBlocks();
@@ -1417,7 +1425,24 @@
         if (parsed.blocks && parsed.blocks.length > 0) {
           const shouldLoad = confirm('임시 저장된 데이터가 있습니다. 불러오시겠습니까?');
           if (shouldLoad) {
-            selectedBlocks = parsed.blocks;
+            // 블록 데이터 복원 (이미지는 다시 캡처해야 함)
+            selectedBlocks = parsed.blocks.map(block => {
+              // 현재 페이지의 블록이면 이미지 다시 캡처
+              if (block.page === currentPage && block.selection && ctx) {
+                const imageData = captureCanvasArea(block.selection);
+                return { ...block, imageData };
+              }
+              return block;
+            });
+            
+            // 첫 페이지로 이동하여 렌더링
+            if (selectedBlocks.length > 0) {
+              const firstPage = Math.min(...selectedBlocks.map(b => b.page));
+              if (currentPage !== firstPage) {
+                await handlePageChange(firstPage);
+              }
+            }
+            
             drawExistingBlocks();
           }
         }
@@ -1724,6 +1749,7 @@
           overlayCtx.strokeStyle = color;
           overlayCtx.lineWidth = 3;
         } else {
+          // 일반 블록은 배경 없음
           overlayCtx.strokeStyle = color;
           overlayCtx.lineWidth = 2;
         }
