@@ -1,4 +1,4 @@
-import { writable } from 'svelte/store';
+import { writable, get } from 'svelte/store';
 import { supabase } from '$lib/supabase.js';
 
 // 블록/문항 데이터 저장
@@ -85,10 +85,10 @@ export async function fetchBlocks(userId, materialId = null) {
   
   try {
     
-    // 실제 Supabase 조회
+    // 실제 Supabase 조회 - materials 테이블과 join하여 자료명도 함께 가져옴
     let query = supabase
       .from('blocks')
-      .select('*')
+      .select('*, materials(title)')
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
     
@@ -103,8 +103,14 @@ export async function fetchBlocks(userId, materialId = null) {
       return { data: null, error };
     }
     
-    blocks.set(data || []);
-    return { data, error: null };
+    // 자료명을 블록 데이터에 포함
+    const blocksWithMaterialTitle = (data || []).map(block => ({
+      ...block,
+      material_title: block.materials?.title || '자료'
+    }));
+    
+    blocks.set(blocksWithMaterialTitle);
+    return { data: blocksWithMaterialTitle, error: null };
     
   } catch (error) {
     console.error('Blocks fetch error:', error);
@@ -152,6 +158,9 @@ export async function deleteBlock(blockId) {
   loading.set(true);
   
   try {
+    // 삭제할 블록의 material_id 찾기
+    const blockToDelete = get(blocks).find(b => b.id === blockId);
+    const materialId = blockToDelete?.material_id;
     
     // 실제 Supabase 삭제
     const { error } = await supabase
@@ -166,6 +175,12 @@ export async function deleteBlock(blockId) {
     
     // 스토어 업데이트
     blocks.update(items => items.filter(item => item.id !== blockId));
+    
+    // 해당 자료의 블록 수 업데이트
+    if (materialId) {
+      await updateMaterialBlockCount(materialId);
+    }
+    
     return { error: null };
     
   } catch (error) {
@@ -181,6 +196,9 @@ export async function deleteBlocks(blockIds) {
   loading.set(true);
   
   try {
+    // 삭제할 블록들의 material_id 찾기
+    const blocksToDelete = get(blocks).filter(b => blockIds.includes(b.id));
+    const materialIds = [...new Set(blocksToDelete.map(b => b.material_id).filter(Boolean))];
     
     // 실제 Supabase 일괄 삭제
     const { error } = await supabase
@@ -195,6 +213,12 @@ export async function deleteBlocks(blockIds) {
     
     // 스토어 업데이트
     blocks.update(items => items.filter(item => !blockIds.includes(item.id)));
+    
+    // 영향받은 자료들의 블록 수 업데이트
+    for (const materialId of materialIds) {
+      await updateMaterialBlockCount(materialId);
+    }
+    
     return { error: null };
     
   } catch (error) {
@@ -205,12 +229,47 @@ export async function deleteBlocks(blockIds) {
   }
 }
 
+// 자료의 블록 수 업데이트
+async function updateMaterialBlockCount(materialId) {
+  try {
+    // 해당 자료의 남은 블록 수 조회
+    const { count, error: countError } = await supabase
+      .from('blocks')
+      .select('*', { count: 'exact', head: true })
+      .eq('material_id', materialId);
+    
+    if (countError) {
+      console.error('Error counting blocks:', countError);
+      return;
+    }
+    
+    const blockCount = count || 0;
+    
+    // materials 테이블 업데이트
+    const { error: updateError } = await supabase
+      .from('materials')
+      .update({
+        extracted_count: blockCount,
+        is_extracted: blockCount > 0
+      })
+      .eq('id', materialId);
+    
+    if (updateError) {
+      console.error('Error updating material:', updateError);
+    }
+  } catch (error) {
+    console.error('Error in updateMaterialBlockCount:', error);
+  }
+}
+
 // 난이도 레벨 매핑
 export function getDifficultyLabel(difficulty) {
   const levels = {
+    'very_easy': '매우 쉬움',
     'easy': '쉬움',
     'medium': '보통',
-    'hard': '어려움'
+    'hard': '어려움',
+    'very_hard': '매우 어려움'
   };
   return levels[difficulty] || difficulty;
 }
@@ -240,9 +299,11 @@ export function getQuestionSubtypeLabel(subtype) {
 // 난이도별 색상 클래스
 export function getDifficultyBadgeClass(difficulty) {
   const classes = {
+    'very_easy': 'badge-info',
     'easy': 'badge-success',
     'medium': 'badge-warning',
-    'hard': 'badge-error'
+    'hard': 'badge-error',
+    'very_hard': 'badge-secondary'
   };
   return classes[difficulty] || 'badge-ghost';
 }
@@ -352,7 +413,7 @@ export function isInCollection(blockId, collectionItems) {
 }
 
 // 이미지 썸네일 생성 유틸리티
-export function createThumbnail(imageData, maxWidth = 150, maxHeight = 150) {
+export function createThumbnail(imageData, maxWidth = 300, maxHeight = 300) {
   if (!imageData) return null;
   
   return new Promise((resolve) => {
@@ -360,6 +421,9 @@ export function createThumbnail(imageData, maxWidth = 150, maxHeight = 150) {
     img.onload = () => {
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
+      
+      // 고해상도 디스플레이를 위한 스케일 팩터
+      const scaleFactor = window.devicePixelRatio || 1;
       
       // 비율 유지하며 리사이즈
       let width = img.width;
@@ -377,11 +441,25 @@ export function createThumbnail(imageData, maxWidth = 150, maxHeight = 150) {
         }
       }
       
-      canvas.width = width;
-      canvas.height = height;
+      // 캔버스 크기를 스케일 팩터에 맞게 설정
+      canvas.width = width * scaleFactor;
+      canvas.height = height * scaleFactor;
+      
+      // CSS 크기는 원래 크기로 설정
+      canvas.style.width = width + 'px';
+      canvas.style.height = height + 'px';
+      
+      // 컨텍스트 스케일링
+      ctx.scale(scaleFactor, scaleFactor);
+      
+      // 고품질 렌더링 설정
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
       
       ctx.drawImage(img, 0, 0, width, height);
-      resolve(canvas.toDataURL('image/png'));
+      
+      // 높은 품질로 이미지 데이터 URL 생성
+      resolve(canvas.toDataURL('image/jpeg', 0.9));
     };
     
     img.onerror = () => resolve(null);

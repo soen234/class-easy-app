@@ -857,11 +857,21 @@
   function captureCanvasArea(rect) {
     if (!canvas || !ctx) return null;
     
+    // 고해상도를 위한 스케일 팩터
+    const scaleFactor = 2; // 2배 해상도
+    
     // 임시 캔버스 생성
     const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = rect.width;
-    tempCanvas.height = rect.height;
+    tempCanvas.width = rect.width * scaleFactor;
+    tempCanvas.height = rect.height * scaleFactor;
     const tempCtx = tempCanvas.getContext('2d');
+    
+    // 고품질 렌더링 설정
+    tempCtx.imageSmoothingEnabled = true;
+    tempCtx.imageSmoothingQuality = 'high';
+    
+    // 스케일 적용
+    tempCtx.scale(scaleFactor, scaleFactor);
     
     // 선택 영역 복사
     tempCtx.drawImage(
@@ -870,8 +880,8 @@
       0, 0, rect.width, rect.height
     );
     
-    // base64로 변환
-    return tempCanvas.toDataURL('image/png');
+    // 높은 품질로 base64 변환
+    return tempCanvas.toDataURL('image/jpeg', 0.95);
   }
   
   function drawSelectionOverlay() {
@@ -1228,7 +1238,7 @@
           const blocksToInsert = newBlocks.map(block => ({
           user_id: $user.id,
           material_id: selectedMaterial.id,
-          title: block.title || `${block.type} ${block.id}`, // title 필드 추가
+          title: block.title, // 자료명 + 페이지 + 블록타입 + 번호
           type: block.type,
           subtype: block.format, // format → subtype
           content: block.extractedText || block.content || '',
