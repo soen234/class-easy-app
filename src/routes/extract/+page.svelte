@@ -429,50 +429,232 @@
   }
   
   async function autoExtractBlocks() {
+    if (!ctx || !canvas) {
+      console.error('캔버스가 준비되지 않았습니다');
+      return;
+    }
+    
     isExtracting = true;
     
-    // 시뮬레이션을 위한 가짜 지연
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    const autoBlocks = [
-      {
-        id: `block-auto-1`,
-        type: 'question',
-        title: `문제 1`,
-        page: currentPage,
-        selection: { x: 50, y: 100, width: 400, height: 80 },
-        content: '다음 중 이차함수의 그래프가 아래로 볼록한 조건은?',
-        format: 'multiple_choice',
-        answer: '',
-        tags: [],
-        linkedBlocks: [],
-        extractedText: '다음 중 이차함수의 그래프가 아래로 볼록한 조건은?',
-        imageData: null
-      },
-      {
-        id: `block-auto-2`,
-        type: 'question',
-        title: `문제 2`,
-        page: currentPage,
-        selection: { x: 50, y: 200, width: 350, height: 60 },
-        content: 'f(x) = x² - 4x + 3의 최솟값을 구하시오.',
-        format: 'short_answer',
-        answer: '',
-        tags: [],
-        linkedBlocks: [],
-        extractedText: 'f(x) = x² - 4x + 3의 최솟값을 구하시오.',
-        imageData: null
-      }
-    ];
-    
-    selectedBlocks = [...selectedBlocks, ...autoBlocks];
-    nextBlockId += autoBlocks.length;
-    isExtracting = false;
-    
-    // 자동 추출 후 블록 그리기
-    setTimeout(() => {
+    try {
+      // 전체 페이지의 이미지 데이터 가져오기
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      
+      // 문항 패턴 찾기
+      const questionAreas = detectQuestionPatterns(imageData, canvas.width, canvas.height);
+      
+      console.log(`${questionAreas.length}개의 문항 영역을 찾았습니다`);
+      
+      // 찾은 영역들로 블록 생성
+      questionAreas.forEach((area, index) => {
+        // 현재 스케일 비율을 반영하여 블록 좌표를 베이스 스케일로 정규화
+        const scaleRatio = currentScale / baseScale;
+        const normalizedSelection = {
+          x: area.x / scaleRatio,
+          y: area.y / scaleRatio,
+          width: area.width / scaleRatio,
+          height: area.height / scaleRatio
+        };
+        
+        // 영역의 이미지 캡처
+        const capturedImage = captureCanvasArea(area);
+        
+        // 블록 타입별 카운터 업데이트
+        blockCounters.question++;
+        
+        const newBlock = {
+          id: generateUUID(),
+          type: 'question',
+          title: `문제 ${blockCounters.question}`,
+          page: currentPage,
+          selection: normalizedSelection,
+          content: '',
+          format: 'multiple_choice',
+          answer: '',
+          tags: [],
+          linkedBlocks: [],
+          extractedText: '',
+          imageData: capturedImage,
+          score: 3,
+          difficulty: '',
+          customTags: []
+        };
+        
+        selectedBlocks = [...selectedBlocks, newBlock];
+      });
+      
+      // 블록 영역 표시
       drawExistingBlocks();
-    }, 100);
+      
+      // selection 정보 저장
+      saveSelections();
+      
+      // 자동 저장
+      autoSaveBlocks();
+      
+    } catch (error) {
+      console.error('자동 추출 오류:', error);
+    } finally {
+      isExtracting = false;
+    }
+  }
+  
+  // 문항 패턴 감지 함수
+  function detectQuestionPatterns(imageData, width, height) {
+    const areas = [];
+    const data = imageData.data;
+    
+    // 배경색 찾기 (가장 많은 색상)
+    const backgroundColor = findMostFrequentColor(data);
+    
+    // 각 행의 콘텐츠 밀도 계산
+    const rowDensities = calculateRowDensities(data, width, height, backgroundColor);
+    
+    // 콘텐츠가 시작하는 행 찾기
+    const contentStarts = findContentStarts(rowDensities);
+    
+    // 각 시작점에서 문항 영역 추정
+    for (let i = 0; i < contentStarts.length; i++) {
+      const startY = contentStarts[i];
+      const endY = contentStarts[i + 1] || height;
+      
+      // 최소 높이 체크 (100px 이상)
+      if (endY - startY < 100) continue;
+      
+      // 왼쪽 여백과 오른쪽 여백 찾기
+      const bounds = findHorizontalBounds(data, width, startY, endY, backgroundColor);
+      
+      // 유효한 영역인지 확인
+      if (bounds.right - bounds.left > 100) {
+        areas.push({
+          x: bounds.left,
+          y: startY,
+          width: bounds.right - bounds.left,
+          height: endY - startY - 20 // 다음 문항과의 간격 고려
+        });
+      }
+    }
+    
+    return areas;
+  }
+  
+  // 가장 많이 나타나는 색상 찾기 (배경색)
+  function findMostFrequentColor(data) {
+    const colorCount = new Map();
+    const sampleRate = 100; // 성능을 위해 100픽셀마다 샘플링
+    
+    for (let i = 0; i < data.length; i += 4 * sampleRate) {
+      const r = Math.round(data[i] / 10) * 10;
+      const g = Math.round(data[i + 1] / 10) * 10;
+      const b = Math.round(data[i + 2] / 10) * 10;
+      const colorStr = `${r},${g},${b}`;
+      colorCount.set(colorStr, (colorCount.get(colorStr) || 0) + 1);
+    }
+    
+    let maxColor = '250,250,250'; // 기본값 (흰색)
+    let maxCount = 0;
+    for (const [color, count] of colorCount) {
+      if (count > maxCount) {
+        maxCount = count;
+        maxColor = color;
+      }
+    }
+    
+    return maxColor.split(',').map(Number);
+  }
+  
+  // 각 행의 콘텐츠 밀도 계산
+  function calculateRowDensities(data, width, height, bgColor) {
+    const densities = [];
+    const tolerance = 30;
+    
+    for (let y = 0; y < height; y++) {
+      let contentPixels = 0;
+      
+      // 샘플링하여 성능 향상
+      for (let x = 0; x < width; x += 5) {
+        const idx = (y * width + x) * 4;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        
+        // 배경색과 다른 픽셀인지 확인
+        if (Math.abs(r - bgColor[0]) > tolerance || 
+            Math.abs(g - bgColor[1]) > tolerance || 
+            Math.abs(b - bgColor[2]) > tolerance) {
+          contentPixels++;
+        }
+      }
+      
+      densities.push(contentPixels);
+    }
+    
+    return densities;
+  }
+  
+  // 콘텐츠 시작 지점 찾기
+  function findContentStarts(densities) {
+    const starts = [];
+    const threshold = 10; // 최소 콘텐츠 픽셀 수
+    const emptyRowsThreshold = 30; // 연속된 빈 행 수
+    
+    let emptyRowCount = 0;
+    
+    for (let i = 0; i < densities.length; i++) {
+      if (densities[i] < threshold) {
+        emptyRowCount++;
+      } else {
+        // 충분한 빈 공간 후에 콘텐츠가 시작하면 문항 시작으로 간주
+        if (emptyRowCount > emptyRowsThreshold && i > 50) { // 페이지 상단 제외
+          starts.push(i);
+        }
+        emptyRowCount = 0;
+      }
+    }
+    
+    // 페이지 최상단도 시작점으로 추가 (첫 문항)
+    if (starts.length === 0 || starts[0] > 100) {
+      // 상단에서 첫 콘텐츠 찾기
+      for (let i = 0; i < Math.min(200, densities.length); i++) {
+        if (densities[i] > threshold) {
+          starts.unshift(i);
+          break;
+        }
+      }
+    }
+    
+    return starts;
+  }
+  
+  // 수평 경계 찾기
+  function findHorizontalBounds(data, width, startY, endY, bgColor) {
+    const tolerance = 30;
+    let left = width;
+    let right = 0;
+    
+    // 영역 내에서 가장 왼쪽과 오른쪽 콘텐츠 픽셀 찾기
+    for (let y = startY; y < Math.min(endY, startY + 200); y += 5) { // 상단 200px만 확인
+      for (let x = 0; x < width; x++) {
+        const idx = (y * width + x) * 4;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        
+        if (Math.abs(r - bgColor[0]) > tolerance || 
+            Math.abs(g - bgColor[1]) > tolerance || 
+            Math.abs(b - bgColor[2]) > tolerance) {
+          left = Math.min(left, x);
+          right = Math.max(right, x);
+        }
+      }
+    }
+    
+    // 여백 추가
+    const padding = 20;
+    return {
+      left: Math.max(0, left - padding),
+      right: Math.min(width, right + padding)
+    };
   }
   
   // 영역 선택 모드 토글
