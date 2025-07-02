@@ -606,7 +606,7 @@
   function handleMouseUp(e) {
     if (extractionMode !== 'manual') return;
     
-    // 리사이징 종료
+    // 리사이징 종료 - 자동 조정 없이 그대로 저장
     if (isResizing) {
       isResizing = false;
       resizingBlock = null;
@@ -618,11 +618,19 @@
       return;
     }
     
-    // 새 선택 영역 처리
+    // 새 선택 영역 처리 - 자동 조정 적용
     if (selectionStart && selectionRect) {
       if (selectionRect.width > 10 && selectionRect.height > 10) {
-        // 영역이 충분히 큰 경우에만 블록 생성
-        createBlockFromSelection();
+        // 자동 경계 조정 적용
+        const adjustedRect = findContentBoundaries(
+          selectionRect.x, 
+          selectionRect.y, 
+          selectionRect.width, 
+          selectionRect.height
+        );
+        
+        // 조정된 영역으로 블록 생성
+        createBlockFromSelection(adjustedRect);
       }
     }
     
@@ -757,11 +765,152 @@
     localStorage.setItem(`block-selections-${selectedMaterial.id}`, JSON.stringify(selections));
   }
   
-  function createBlockFromSelection() {
-    if (!selectionRect || !canvas) return;
+  // 콘텐츠 경계 자동 감지 함수
+  function findContentBoundaries(x, y, width, height) {
+    if (!ctx || !canvas) return { x, y, width, height };
+    
+    try {
+      // 선택 영역의 이미지 데이터 가져오기
+      const imageData = ctx.getImageData(x, y, width, height);
+      const data = imageData.data;
+      
+      // 배경색 임계값 설정 (주로 흰색 배경)
+      const threshold = 240; // RGB 값이 모두 이 값 이상이면 배경으로 간주
+      const padding = 5; // 최소 여백
+      
+      // 픽셀이 배경인지 확인하는 함수
+      function isBackground(r, g, b) {
+        return r >= threshold && g >= threshold && b >= threshold;
+      }
+      
+      // 행에 콘텐츠가 있는지 확인하는 함수
+      function hasContentInRow(row) {
+        let contentPixels = 0;
+        for (let col = 0; col < width; col++) {
+          const idx = (row * width + col) * 4;
+          if (!isBackground(data[idx], data[idx + 1], data[idx + 2])) {
+            contentPixels++;
+          }
+        }
+        // 행의 5% 이상이 콘텐츠 픽셀이면 콘텐츠가 있다고 판단
+        return contentPixels > width * 0.05;
+      }
+      
+      // 열에 콘텐츠가 있는지 확인하는 함수
+      function hasContentInCol(col) {
+        let contentPixels = 0;
+        for (let row = 0; row < height; row++) {
+          const idx = (row * width + col) * 4;
+          if (!isBackground(data[idx], data[idx + 1], data[idx + 2])) {
+            contentPixels++;
+          }
+        }
+        // 열의 5% 이상이 콘텐츠 픽셀이면 콘텐츠가 있다고 판단
+        return contentPixels > height * 0.05;
+      }
+      
+      // 위에서부터 스캔
+      let top = 0;
+      for (let row = 0; row < height; row++) {
+        if (hasContentInRow(row)) {
+          top = Math.max(0, row - padding);
+          break;
+        }
+      }
+      
+      // 아래에서부터 스캔
+      let bottom = height - 1;
+      for (let row = height - 1; row >= 0; row--) {
+        if (hasContentInRow(row)) {
+          bottom = Math.min(height - 1, row + padding);
+          break;
+        }
+      }
+      
+      // 왼쪽에서부터 스캔
+      let left = 0;
+      for (let col = 0; col < width; col++) {
+        if (hasContentInCol(col)) {
+          left = Math.max(0, col - padding);
+          break;
+        }
+      }
+      
+      // 오른쪽에서부터 스캔
+      let right = width - 1;
+      for (let col = width - 1; col >= 0; col--) {
+        if (hasContentInCol(col)) {
+          right = Math.min(width - 1, col + padding);
+          break;
+        }
+      }
+      
+      // 문항 중간을 자르지 않도록 수평 구분선 감지
+      // 연속된 빈 행을 찾아 문항 경계 추정
+      const emptyRows = [];
+      for (let row = top; row <= bottom; row++) {
+        if (!hasContentInRow(row)) {
+          emptyRows.push(row);
+        }
+      }
+      
+      // 연속된 빈 행 그룹 찾기
+      if (emptyRows.length > 10) {
+        // 선택 영역 중앙 근처의 빈 공간 찾기
+        const centerY = (top + bottom) / 2;
+        let closestEmptyStart = -1;
+        let minDistance = height;
+        
+        for (let i = 0; i < emptyRows.length - 5; i++) {
+          // 연속된 빈 행이 5개 이상인 경우
+          if (emptyRows[i + 5] - emptyRows[i] === 5) {
+            const distance = Math.abs(emptyRows[i] - centerY);
+            if (distance < minDistance) {
+              minDistance = distance;
+              closestEmptyStart = emptyRows[i];
+            }
+          }
+        }
+        
+        // 중앙 근처에 충분한 빈 공간이 있으면 거기서 자르기
+        if (closestEmptyStart !== -1 && minDistance < height * 0.3) {
+          // 위쪽 또는 아래쪽 선택
+          if (closestEmptyStart < centerY) {
+            bottom = closestEmptyStart - 1;
+          } else {
+            top = closestEmptyStart + 5;
+          }
+        }
+      }
+      
+      // 조정된 영역이 너무 작지 않도록 최소 크기 보장
+      const adjustedWidth = right - left + 1;
+      const adjustedHeight = bottom - top + 1;
+      
+      if (adjustedWidth < 50 || adjustedHeight < 50) {
+        // 너무 작으면 원본 크기 유지
+        return { x, y, width, height };
+      }
+      
+      return {
+        x: x + left,
+        y: y + top,
+        width: adjustedWidth,
+        height: adjustedHeight
+      };
+    } catch (error) {
+      console.error('콘텐츠 경계 감지 오류:', error);
+      return { x, y, width, height };
+    }
+  }
+  
+  function createBlockFromSelection(adjustedRect = null) {
+    // adjustedRect가 제공되면 사용, 아니면 기존 selectionRect 사용
+    const rectToUse = adjustedRect || selectionRect;
+    if (!rectToUse || !canvas) return;
     
     // 선택된 영역의 이미지 캡처
-    const imageData = captureCanvasArea(selectionRect);
+    const imageData = captureCanvasArea(rectToUse);
     
     // 기본 타입은 문제
     const defaultType = 'question';
@@ -773,10 +922,10 @@
     // 현재 스케일 비율을 반영하여 블록 좌표를 베이스 스케일로 정규화
     const scaleRatio = currentScale / baseScale;
     const normalizedSelection = {
-      x: selectionRect.x / scaleRatio,
-      y: selectionRect.y / scaleRatio,
-      width: selectionRect.width / scaleRatio,
-      height: selectionRect.height / scaleRatio
+      x: rectToUse.x / scaleRatio,
+      y: rectToUse.y / scaleRatio,
+      width: rectToUse.width / scaleRatio,
+      height: rectToUse.height / scaleRatio
     };
     
     const newBlock = {
