@@ -1129,6 +1129,15 @@
             mouseY >= scaledY && mouseY <= scaledY + scaledHeight) {
           // 선택된 블록 표시
           selectedBlockId = block.id;
+          
+          // 체크박스도 자동으로 체크
+          if (!checkedBlocks.has(block.id)) {
+            checkedBlocks.add(block.id);
+          } else {
+            checkedBlocks.delete(block.id);
+          }
+          checkedBlocks = new Set(checkedBlocks); // 반응성 트리거
+          
           console.log('블록 선택됨:', block.title);
           drawExistingBlocks();
           e.preventDefault();
@@ -1137,7 +1146,7 @@
       }
     }
     
-    // 빈 영역 클릭 시 선택 해제
+    // 빈 영역 클릭 시 선택 해제 (체크박스는 유지)
     selectedBlockId = null;
     drawExistingBlocks();
     
@@ -1814,6 +1823,18 @@
     
     // 반응성 트리거
     selectedBlocks = [...selectedBlocks];
+  }
+  
+  // 블록 리스트에서 클릭했을 때
+  function selectBlockFromList(block) {
+    selectedBlockId = block.id;
+    
+    // 현재 페이지가 블록의 페이지와 다르면 해당 페이지로 이동
+    if (currentPage !== block.page) {
+      handlePageChange(block.page);
+    }
+    
+    drawExistingBlocks();
   }
 
   // 드래그 상태
@@ -2739,13 +2760,14 @@
               <div class="space-y-2 overflow-y-auto" style="max-height: 840px;">
                 {#each selectedBlocks as block, index}
                   <div 
-                    class="rect-block-item" 
+                    class="rect-block-item {selectedBlockId === block.id ? 'ring-2 ring-primary' : ''}" 
                     draggable="true"
                     on:dragstart={(e) => handleDragStart(e, block, index)}
                     on:dragend={handleDragEnd}
                     on:dragover={(e) => handleDragOver(e, index)}
                     on:dragleave={handleDragLeave}
                     on:drop={(e) => handleDrop(e, index)}
+                    on:click={() => selectBlockFromList(block)}
                   >
                     <div class="space-y-2">
                       <!-- 블록 헤더 -->
@@ -3280,7 +3302,7 @@
 <style>
   /* 블록 아이템 스타일 */
   .rect-block-item {
-    @apply bg-base-100 border border-base-300 rounded-lg p-3 transition-all;
+    @apply bg-base-100 border border-base-300 rounded-lg p-3 transition-all cursor-pointer;
   }
   
   .rect-block-item:hover {
