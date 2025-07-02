@@ -353,7 +353,7 @@
     }
     
     if (!ctx) {
-      ctx = canvas.getContext('2d');
+      ctx = canvas.getContext('2d', { willReadFrequently: true });
     }
     
     const page = await pdfDoc.getPage(pageNum);
@@ -548,22 +548,98 @@
     // 이진화된 이미지 생성
     const binaryData = createBinaryImage(imageData, 240);
     
-    // 형태학적 팽창을 적용하여 텍스트 라인 연결
-    const dilatedData = applyMorphologicalDilation(binaryData, width, height, 3);
+    // 수직 프로젝션으로 큰 공백 찾기
+    const verticalProjection = new Float32Array(height);
+    for (let y = 0; y < height; y++) {
+      let count = 0;
+      for (let x = 0; x < width; x++) {
+        if (binaryData[y * width + x]) count++;
+      }
+      verticalProjection[y] = count;
+    }
     
-    // 컨투어 찾기 (연결된 컴포넌트 찾기)
-    const contours = findContours(dilatedData, width, height);
+    // 큰 공백 영역 찾기 (문항 사이 구분)
+    const gaps = [];
+    const minGapSize = Math.max(30, Math.floor(height * 0.03)); // 최소 공백 크기
+    let inGap = false;
+    let gapStart = 0;
     
-    // 컨투어를 경계 사각형으로 변환
-    const boundingBoxes = contours.map(contour => getBoundingBox(contour));
+    for (let y = 0; y < height; y++) {
+      if (verticalProjection[y] < 5) { // 거의 빈 줄
+        if (!inGap) {
+          inGap = true;
+          gapStart = y;
+        }
+      } else {
+        if (inGap && y - gapStart >= minGapSize) {
+          gaps.push({ start: gapStart, end: y });
+        }
+        inGap = false;
+      }
+    }
     
-    // Y좌표 기준으로 정렬
-    boundingBoxes.sort((a, b) => a.y - b.y);
+    // 공백을 기준으로 영역 분할
+    const regions = [];
+    let lastEnd = 0;
     
-    // 너무 작은 영역 필터링 및 겹치는 영역 병합
-    const areas = mergeOverlappingBoxes(boundingBoxes).filter(box => 
-      box.width > 100 && box.height > 30
-    );
+    for (const gap of gaps) {
+      if (gap.start - lastEnd > 50) { // 최소 높이
+        regions.push({ y: lastEnd, height: gap.start - lastEnd });
+      }
+      lastEnd = gap.end;
+    }
+    
+    // 마지막 영역
+    if (height - lastEnd > 50) {
+      regions.push({ y: lastEnd, height: height - lastEnd });
+    }
+    
+    // 각 영역에서 실제 콘텐츠 경계 찾기
+    const areas = [];
+    for (const region of regions) {
+      // 해당 영역의 이미지 데이터
+      const regionData = {
+        data: imageData.data,
+        width: imageData.width,
+        height: imageData.height
+      };
+      
+      // 형태학적 팽창 적용
+      const regionBinary = new Uint8Array(width * region.height);
+      for (let y = 0; y < region.height; y++) {
+        for (let x = 0; x < width; x++) {
+          regionBinary[y * width + x] = binaryData[(region.y + y) * width + x];
+        }
+      }
+      
+      const dilated = applyMorphologicalDilation(regionBinary, width, region.height, 2);
+      
+      // 컨투어 찾기
+      const contours = findContours(dilated, width, region.height);
+      
+      if (contours.length > 0) {
+        // 모든 컨투어를 포함하는 경계 찾기
+        let minX = width, maxX = 0;
+        let minY = region.height, maxY = 0;
+        
+        for (const contour of contours) {
+          for (const point of contour) {
+            minX = Math.min(minX, point.x);
+            maxX = Math.max(maxX, point.x);
+            minY = Math.min(minY, point.y);
+            maxY = Math.max(maxY, point.y);
+          }
+        }
+        
+        const padding = 10;
+        areas.push({
+          x: Math.max(0, minX - padding),
+          y: region.y + Math.max(0, minY - padding),
+          width: Math.min(width, maxX - minX + 2 * padding),
+          height: Math.min(region.height, maxY - minY + 2 * padding)
+        });
+      }
+    }
     
     console.log(`${areas.length}개의 문항 영역 추출됨`);
     return areas;
@@ -753,15 +829,18 @@
   // 형태학적 팽창 (Morphological Dilation) - 텍스트 라인 연결
   function applyMorphologicalDilation(binaryData, width, height, kernelSize) {
     const dilated = new Uint8Array(binaryData.length);
-    const halfKernel = Math.floor(kernelSize / 2);
+    
+    // 수평 팽창만 적용 (텍스트 라인 연결)
+    const horizontalKernel = Math.floor(kernelSize * 3);
+    const verticalKernel = Math.floor(kernelSize);
     
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         let hasContent = false;
         
-        // 커널 범위 내에서 콘텐츠 픽셀 확인
-        for (let ky = -halfKernel; ky <= halfKernel; ky++) {
-          for (let kx = -halfKernel; kx <= halfKernel; kx++) {
+        // 수평 방향으로 더 넓게, 수직 방향으로는 좁게
+        for (let ky = -verticalKernel; ky <= verticalKernel; ky++) {
+          for (let kx = -horizontalKernel; kx <= horizontalKernel; kx++) {
             const ny = y + ky;
             const nx = x + kx;
             
@@ -862,43 +941,51 @@
     };
   }
   
-  // 겹치는 박스 병합
+  // 겹치는 박스 병합 (실제로 겹치는 경우만)
   function mergeOverlappingBoxes(boxes) {
     if (boxes.length === 0) return [];
     
     const merged = [];
-    let currentBox = {...boxes[0]};
+    const used = new Array(boxes.length).fill(false);
     
-    for (let i = 1; i < boxes.length; i++) {
-      const box = boxes[i];
+    for (let i = 0; i < boxes.length; i++) {
+      if (used[i]) continue;
       
-      // 두 박스가 겹치거나 가까이 있는지 확인
-      const overlapY = currentBox.y + currentBox.height + 20 > box.y;
-      const overlapX = !(box.x > currentBox.x + currentBox.width || 
-                         box.x + box.width < currentBox.x);
+      let currentBox = {...boxes[i]};
+      used[i] = true;
       
-      if (overlapY && overlapX) {
-        // 병합
-        const minX = Math.min(currentBox.x, box.x);
-        const minY = Math.min(currentBox.y, box.y);
-        const maxX = Math.max(currentBox.x + currentBox.width, box.x + box.width);
-        const maxY = Math.max(currentBox.y + currentBox.height, box.y + box.height);
+      // 실제로 겹치는 박스들만 병합
+      for (let j = i + 1; j < boxes.length; j++) {
+        if (used[j]) continue;
         
-        currentBox = {
-          x: minX,
-          y: minY,
-          width: maxX - minX,
-          height: maxY - minY
-        };
-      } else {
-        // 현재 박스 저장하고 새로운 박스 시작
-        merged.push(currentBox);
-        currentBox = {...box};
+        const box = boxes[j];
+        
+        // 실제 겹침 확인 (여백 없이)
+        const overlapX = !(box.x >= currentBox.x + currentBox.width || 
+                          currentBox.x >= box.x + box.width);
+        const overlapY = !(box.y >= currentBox.y + currentBox.height || 
+                          currentBox.y >= box.y + box.height);
+        
+        if (overlapX && overlapY) {
+          // 병합
+          const minX = Math.min(currentBox.x, box.x);
+          const minY = Math.min(currentBox.y, box.y);
+          const maxX = Math.max(currentBox.x + currentBox.width, box.x + box.width);
+          const maxY = Math.max(currentBox.y + currentBox.height, box.y + box.height);
+          
+          currentBox = {
+            x: minX,
+            y: minY,
+            width: maxX - minX,
+            height: maxY - minY
+          };
+          
+          used[j] = true;
+        }
       }
+      
+      merged.push(currentBox);
     }
-    
-    // 마지막 박스 저장
-    merged.push(currentBox);
     
     return merged;
   }
@@ -1229,9 +1316,16 @@
     
     try {
       isSaving = true;
+      
+      // 이미지 데이터를 제외한 블록 정보만 저장
+      const lightBlocks = selectedBlocks.map(block => ({
+        ...block,
+        imageData: null // 이미지 데이터는 저장하지 않음
+      }));
+      
       const tempData = {
         materialId: selectedMaterial.id,
-        blocks: selectedBlocks,
+        blocks: lightBlocks,
         timestamp: new Date().toISOString()
       };
       
@@ -1242,6 +1336,16 @@
       console.log('임시 저장 완료:', lastSavedTime);
     } catch (error) {
       console.error('임시 저장 오류:', error);
+      
+      // 용량 초과 시 오래된 임시 데이터 삭제
+      if (error.name === 'QuotaExceededError') {
+        const keys = Object.keys(localStorage);
+        const extractKeys = keys.filter(key => key.startsWith('extract-temp-'));
+        if (extractKeys.length > 0) {
+          localStorage.removeItem(extractKeys[0]);
+          console.log('오래된 임시 데이터 삭제:', extractKeys[0]);
+        }
+      }
     } finally {
       isSaving = false;
     }
