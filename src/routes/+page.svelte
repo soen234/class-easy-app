@@ -16,21 +16,23 @@
     if ($user?.id) {
       // 자료 가져오기
       await fetchMaterials($user.id);
-      stats.totalMaterials = $materials.length;
       
       // 블록 가져오기
       await fetchBlocks($user.id);
-      stats.totalBlocks = $blocks.length;
       
       // 템플릿 수 가져오기
       const { count } = await supabase
         .from('templates')
         .select('*', { count: 'exact', head: true })
         .eq('user_id', $user.id);
-      stats.totalTemplates = count || 0;
       
-      // 최근 활동 생성
-      stats.recentActivities = generateRecentActivities();
+      // 반응형 업데이트를 위해 전체 객체를 새로 할당
+      stats = {
+        totalMaterials: $materials.length,
+        totalBlocks: $blocks.length,
+        totalTemplates: count || 0,
+        recentActivities: generateRecentActivities()
+      };
     }
   });
   
