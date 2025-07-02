@@ -1,3 +1,82 @@
+<script>
+  import { onMount } from 'svelte';
+  import { user } from '$lib/stores/auth.js';
+  import { materials, fetchMaterials } from '$lib/stores/materials.js';
+  import { blocks, fetchBlocks } from '$lib/stores/blocks.js';
+  import { supabase } from '$lib/supabase.js';
+  
+  let stats = {
+    totalMaterials: 0,
+    totalBlocks: 0,
+    totalTemplates: 0,
+    recentActivities: []
+  };
+  
+  onMount(async () => {
+    if ($user?.id) {
+      // 자료 가져오기
+      await fetchMaterials($user.id);
+      stats.totalMaterials = $materials.length;
+      
+      // 블록 가져오기
+      await fetchBlocks($user.id);
+      stats.totalBlocks = $blocks.length;
+      
+      // 템플릿 수 가져오기
+      const { count } = await supabase
+        .from('templates')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', $user.id);
+      stats.totalTemplates = count || 0;
+      
+      // 최근 활동 생성
+      stats.recentActivities = generateRecentActivities();
+    }
+  });
+  
+  function generateRecentActivities() {
+    const activities = [];
+    
+    // 최근 자료 업로드
+    const recentMaterials = $materials.slice(0, 2);
+    recentMaterials.forEach(material => {
+      activities.push({
+        type: 'upload',
+        title: `${material.title} 업로드`,
+        time: getRelativeTime(material.created_at),
+        icon: '📄',
+        color: 'primary'
+      });
+    });
+    
+    // 최근 블록 추출
+    const recentBlocks = $blocks.slice(0, 2);
+    if (recentBlocks.length > 0) {
+      activities.push({
+        type: 'extract',
+        title: `${recentBlocks.length}개 문항 추출 완료`,
+        time: getRelativeTime(recentBlocks[0].created_at),
+        icon: '❓',
+        color: 'secondary'
+      });
+    }
+    
+    return activities.slice(0, 3);
+  }
+  
+  function getRelativeTime(dateString) {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diff = now - date;
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    
+    if (days > 0) return `${days}일 전`;
+    if (hours > 0) return `${hours}시간 전`;
+    return '방금 전';
+  }
+</script>
+
 <svelte:head>
   <title>홈 - Class Easy</title>
 </svelte:head>
@@ -8,7 +87,7 @@
     <div class="hero-content text-center py-12">
       <div class="max-w-md">
         <h1 class="text-4xl font-bold mb-4">Class Easy</h1>
-        <p class="text-lg mb-6">AI 기반 교육 콘텐츠 제작 도구</p>
+        <p class="text-lg mb-6">나만의 문제은행 만들기</p>
         <div class="flex gap-4 justify-center">
           <a href="/upload" class="btn btn-accent">자료 올리기</a>
           <a href="/my-materials" class="btn btn-outline btn-accent">내 자료 보기</a>
@@ -26,7 +105,7 @@
         </svg>
       </div>
       <div class="stat-title">원본 자료</div>
-      <div class="stat-value text-primary">2</div>
+      <div class="stat-value text-primary">{stats.totalMaterials}</div>
       <div class="stat-desc">업로드된 파일</div>
     </div>
 
@@ -37,7 +116,7 @@
         </svg>
       </div>
       <div class="stat-title">문제 은행</div>
-      <div class="stat-value text-secondary">8</div>
+      <div class="stat-value text-secondary">{stats.totalBlocks}</div>
       <div class="stat-desc">추출된 문항</div>
     </div>
 
@@ -48,7 +127,7 @@
         </svg>
       </div>
       <div class="stat-title">제작한 자료</div>
-      <div class="stat-value text-success">1</div>
+      <div class="stat-value text-success">{stats.totalTemplates}</div>
       <div class="stat-desc">생성된 자료</div>
     </div>
   </div>
@@ -58,41 +137,23 @@
     <div class="card-body">
       <h2 class="card-title mb-4">최근 활동</h2>
       <div class="space-y-4">
-        <div class="flex items-center space-x-4 p-3 bg-base-200 rounded-lg">
-          <div class="avatar placeholder">
-            <div class="bg-primary text-primary-content rounded w-10">
-              <span class="text-xs">📄</span>
+        {#if stats.recentActivities.length > 0}
+          {#each stats.recentActivities as activity}
+            <div class="flex items-center space-x-4 p-3 bg-base-200 rounded-lg">
+              <div class="avatar placeholder">
+                <div class="bg-{activity.color} text-{activity.color}-content rounded w-10">
+                  <span class="text-xs">{activity.icon}</span>
+                </div>
+              </div>
+              <div class="flex-1">
+                <p class="font-medium">{activity.title}</p>
+                <p class="text-sm text-base-content/70">{activity.time}</p>
+              </div>
             </div>
-          </div>
-          <div class="flex-1">
-            <p class="font-medium">블랙라벨 수학(하) 업로드</p>
-            <p class="text-sm text-base-content/70">2시간 전</p>
-          </div>
-        </div>
-        
-        <div class="flex items-center space-x-4 p-3 bg-base-200 rounded-lg">
-          <div class="avatar placeholder">
-            <div class="bg-secondary text-secondary-content rounded w-10">
-              <span class="text-xs">❓</span>
-            </div>
-          </div>
-          <div class="flex-1">
-            <p class="font-medium">3개 문항 추출 완료</p>
-            <p class="text-sm text-base-content/70">어제</p>
-          </div>
-        </div>
-        
-        <div class="flex items-center space-x-4 p-3 bg-base-200 rounded-lg">
-          <div class="avatar placeholder">
-            <div class="bg-accent text-accent-content rounded w-10">
-              <span class="text-xs">📋</span>
-            </div>
-          </div>
-          <div class="flex-1">
-            <p class="font-medium">시험지 템플릿 생성</p>
-            <p class="text-sm text-base-content/70">3일 전</p>
-          </div>
-        </div>
+          {/each}
+        {:else}
+          <p class="text-base-content/70">아직 활동이 없습니다.</p>
+        {/if}
       </div>
     </div>
   </div>
