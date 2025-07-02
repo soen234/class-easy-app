@@ -81,6 +81,17 @@
   let hoveredBlockId = null;
   let selectedBlockId = null; // 선택된 블록 ID
   
+  // 드래그 관련 변수
+  let isDraggingBlock = false;
+  let draggingBlock = null;
+  let dragStartPos = null;
+  let originalBlockPos = null;
+  
+  // Undo/Redo를 위한 히스토리
+  let history = [];
+  let historyIndex = -1;
+  const maxHistorySize = 50;
+  
   // 줌 관련 변수
   let zoomLevel = 1;
   const zoomStep = 0.1;
@@ -517,6 +528,9 @@
       }
       
       // 모든 블록을 한 번에 추가
+      if (totalBlocksFound.length > 0) {
+        saveToHistory(); // 변경 전 상태 저장
+      }
       selectedBlocks = [...selectedBlocks, ...totalBlocksFound];
       
       // 원래 페이지로 돌아가기
@@ -1073,6 +1087,102 @@
     return false;
   }
   
+  // 키보드 이벤트 핸들러
+  function handleKeyDown(e) {
+    // 블록 영역 지정 단계에서 화살표 키로 페이지 이동
+    if (extractionStep === 'extract-blocks' && !isSelecting) {
+      switch (e.key) {
+        case 'ArrowLeft':
+          e.preventDefault();
+          if (currentPage > 1) {
+            handlePageChange(currentPage - 1);
+          }
+          return;
+          
+        case 'ArrowRight':
+          e.preventDefault();
+          if (currentPage < totalPages) {
+            handlePageChange(currentPage + 1);
+          }
+          return;
+      }
+    }
+    
+    // 백스페이스 또는 Delete 키 감지
+    if (e.key === 'Backspace' || e.key === 'Delete') {
+      // 입력 필드에 포커스가 있는 경우는 제외
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
+        return;
+      }
+      
+      // 선택된 블록이 있으면 삭제
+      if (selectedBlockId) {
+        e.preventDefault();
+        removeBlock(selectedBlockId);
+        selectedBlockId = null;
+      } else if (checkedBlocks.size > 0) {
+        // 선택된 블록이 없지만 체크된 블록들이 있으면 일괄 삭제 확인
+        e.preventDefault();
+        const confirmDelete = confirm(`선택된 ${checkedBlocks.size}개의 블록을 삭제하시겠습니까?`);
+        if (confirmDelete) {
+          batchDeleteBlocks();
+        }
+      }
+    } else if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+      // Ctrl+Z / Cmd+Z: Undo
+      e.preventDefault();
+      undo();
+    } else if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) {
+      // Ctrl+Y / Cmd+Y / Ctrl+Shift+Z / Cmd+Shift+Z: Redo
+      e.preventDefault();
+      redo();
+    }
+  }
+  
+  // 히스토리에 상태 저장
+  function saveToHistory() {
+    // 현재 상태를 저장
+    const state = {
+      blocks: selectedBlocks.map(b => ({ ...b })),
+      checkedBlocks: new Set(checkedBlocks)
+    };
+    
+    // 현재 인덱스 이후의 히스토리는 제거
+    history = history.slice(0, historyIndex + 1);
+    
+    // 새 상태 추가
+    history.push(state);
+    
+    // 최대 크기 유지
+    if (history.length > maxHistorySize) {
+      history.shift();
+    } else {
+      historyIndex++;
+    }
+  }
+  
+  // Undo
+  function undo() {
+    if (historyIndex > 0) {
+      historyIndex--;
+      const state = history[historyIndex];
+      selectedBlocks = state.blocks.map(b => ({ ...b }));
+      checkedBlocks = new Set(state.checkedBlocks);
+      drawExistingBlocks();
+    }
+  }
+  
+  // Redo
+  function redo() {
+    if (historyIndex < history.length - 1) {
+      historyIndex++;
+      const state = history[historyIndex];
+      selectedBlocks = state.blocks.map(b => ({ ...b }));
+      checkedBlocks = new Set(state.checkedBlocks);
+      drawExistingBlocks();
+    }
+  }
+
   // 마우스 이벤트 핸들러
   function handleMouseDown(e) {
     if (!canvas) return;
@@ -1127,23 +1237,32 @@
         // 블록 내부 클릭 확인
         if (mouseX >= scaledX && mouseX <= scaledX + scaledWidth &&
             mouseY >= scaledY && mouseY <= scaledY + scaledHeight) {
-          // 이미 선택된 블록이면 체크박스만 토글
-          if (selectedBlockId === block.id) {
-            if (!checkedBlocks.has(block.id)) {
-              checkedBlocks.add(block.id);
-            } else {
-              checkedBlocks.delete(block.id);
-            }
-            checkedBlocks = new Set(checkedBlocks); // 반응성 트리거
+          // Shift 키를 누르고 있으면 드래그 시작
+          if (e.shiftKey) {
+            isDraggingBlock = true;
+            draggingBlock = block;
+            dragStartPos = { x: mouseX, y: mouseY };
+            originalBlockPos = { x: block.selection.x, y: block.selection.y };
+            overlayCanvas.style.cursor = 'move';
           } else {
-            // 새로 선택하는 경우
-            selectedBlockId = block.id;
-            
-            // 체크박스도 자동으로 체크
-            if (!checkedBlocks.has(block.id)) {
-              checkedBlocks.add(block.id);
+            // 이미 선택된 블록이면 체크박스만 토글
+            if (selectedBlockId === block.id) {
+              if (!checkedBlocks.has(block.id)) {
+                checkedBlocks.add(block.id);
+              } else {
+                checkedBlocks.delete(block.id);
+              }
+              checkedBlocks = new Set(checkedBlocks); // 반응성 트리거
+            } else {
+              // 새로 선택하는 경우
+              selectedBlockId = block.id;
+              
+              // 체크박스도 자동으로 체크
+              if (!checkedBlocks.has(block.id)) {
+                checkedBlocks.add(block.id);
+              }
+              checkedBlocks = new Set(checkedBlocks); // 반응성 트리거
             }
-            checkedBlocks = new Set(checkedBlocks); // 반응성 트리거
           }
           
           console.log('블록 선택됨:', block.title);
@@ -1177,19 +1296,39 @@
   function handleMouseMove(e) {
     if (!canvas) return;
     
-    // 자동 추출 모드에서는 리사이징만 처리
-    if (extractionMode === 'auto' && !isResizing) {
-      updateCursor((e.clientX - canvas.getBoundingClientRect().left) * (canvas.width / canvas.getBoundingClientRect().width),
-                   (e.clientY - canvas.getBoundingClientRect().top) * (canvas.height / canvas.getBoundingClientRect().height));
-      return;
-    }
-    
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
     
     const currentX = (e.clientX - rect.left) * scaleX;
     const currentY = (e.clientY - rect.top) * scaleY;
+    
+    // 블록 드래그 처리
+    if (isDraggingBlock && draggingBlock && dragStartPos && originalBlockPos) {
+      const scaleRatio = currentScale / baseScale;
+      const deltaX = (currentX - dragStartPos.x) / scaleRatio;
+      const deltaY = (currentY - dragStartPos.y) / scaleRatio;
+      
+      // 블록 위치 업데이트
+      draggingBlock.selection.x = originalBlockPos.x + deltaX;
+      draggingBlock.selection.y = originalBlockPos.y + deltaY;
+      
+      // 캔버스 경계 체크
+      const canvasWidth = canvas.width / scaleRatio;
+      const canvasHeight = canvas.height / scaleRatio;
+      
+      draggingBlock.selection.x = Math.max(0, Math.min(draggingBlock.selection.x, canvasWidth - draggingBlock.selection.width));
+      draggingBlock.selection.y = Math.max(0, Math.min(draggingBlock.selection.y, canvasHeight - draggingBlock.selection.height));
+      
+      drawExistingBlocks();
+      return;
+    }
+    
+    // 자동 추출 모드에서는 리사이징만 처리
+    if (extractionMode === 'auto' && !isResizing) {
+      updateCursor(currentX, currentY);
+      return;
+    }
     
     // 리사이징 처리
     if (isResizing && resizingBlock && resizeStartPos && originalSelection) {
@@ -1250,6 +1389,24 @@
   function handleMouseUp(e) {
     if (!canvas) return;
     
+    // 드래그 종료
+    if (isDraggingBlock) {
+      isDraggingBlock = false;
+      
+      // 드래그 완료 후 번호 재계산 (위치가 변경되었으므로)
+      if (draggingBlock) {
+        saveToHistory(); // 드래그 전 상태 저장
+        recalculateBlockNumbers();
+        saveSelections();
+      }
+      
+      draggingBlock = null;
+      dragStartPos = null;
+      originalBlockPos = null;
+      overlayCanvas.style.cursor = 'default';
+      return;
+    }
+    
     // 리사이징 종료 - 자동 조정 없이 그대로 저장
     if (isResizing) {
       isResizing = false;
@@ -1257,6 +1414,7 @@
       resizeHandle = null;
       resizeStartPos = null;
       originalSelection = null;
+      saveToHistory(); // 리사이징 후 상태 저장
       // 리사이즈 후 selection 저장
       saveSelections();
       return;
@@ -1539,20 +1697,43 @@
     }
   }
   
+  // 새 블록을 삽입할 위치 찾기
+  function findInsertPosition(newBlock) {
+    // 같은 페이지의 블록들 중에서 Y 좌표 기준으로 삽입 위치 찾기
+    for (let i = 0; i < selectedBlocks.length; i++) {
+      const block = selectedBlocks[i];
+      if (block.page > newBlock.page) {
+        return i;
+      }
+      if (block.page === newBlock.page && block.selection.y > newBlock.selection.y) {
+        return i;
+      }
+    }
+    return selectedBlocks.length;
+  }
+  
   function createBlockFromSelection(adjustedRect = null) {
     // adjustedRect가 제공되면 사용, 아니면 기존 selectionRect 사용
     const rectToUse = adjustedRect || selectionRect;
     if (!rectToUse || !canvas) return;
+    
+    saveToHistory(); // 변경 전 상태 저장
     
     // 선택된 영역의 이미지 캡처
     const imageData = captureCanvasArea(rectToUse);
     
     // 기본 타입은 문제
     const defaultType = 'question';
-    blockCounters[defaultType]++;
     
+    // 현재 페이지의 해당 타입 블록 개수 계산
+    const currentPageBlocks = selectedBlocks.filter(b => 
+      b.page === currentPage && b.type === defaultType
+    );
+    const currentPageTypeCount = currentPageBlocks.length;
+    
+    // 임시 제목 (나중에 recalculateBlockNumbers에서 재계산됨)
     const typeInfo = blockTypes.find(t => t.value === defaultType);
-    const title = `${typeInfo.label} ${blockCounters[defaultType]}`;
+    const tempTitle = `${typeInfo.label} ${currentPageTypeCount + 1}`;
     
     // 현재 스케일 비율을 반영하여 블록 좌표를 베이스 스케일로 정규화
     const scaleRatio = currentScale / baseScale;
@@ -1566,7 +1747,7 @@
     const newBlock = {
       id: generateUUID(),
       type: defaultType,
-      title: title,
+      title: tempTitle,
       page: currentPage,
       selection: normalizedSelection, // 정규화된 좌표 저장
       content: '',
@@ -1581,8 +1762,12 @@
       customTags: [] // 커스텀 태그
     };
     
-    selectedBlocks = [...selectedBlocks, newBlock];
-    nextBlockId++;
+    // 새 블록을 현재 페이지의 적절한 위치에 삽입
+    const insertIndex = findInsertPosition(newBlock);
+    selectedBlocks.splice(insertIndex, 0, newBlock);
+    
+    // 전체 블록 번호 재계산
+    recalculateBlockNumbers();
     
     // 블록 영역 표시 (약간의 지연 후)
     setTimeout(() => {
@@ -1617,8 +1802,17 @@
     drawExistingBlocks();
   }
   
-  // 블록 번호 재계산 함수
+  // 블록 번호 재계산 함수 (페이지 순서 기반)
   function recalculateBlockNumbers() {
+    // 페이지별로 블록을 정렬
+    const sortedBlocks = [...selectedBlocks].sort((a, b) => {
+      if (a.page !== b.page) {
+        return a.page - b.page;
+      }
+      // 같은 페이지면 y 좌표로 정렬
+      return a.selection.y - b.selection.y;
+    });
+    
     // 각 타입별 카운터 초기화
     const tempCounters = {
       question: 0,
@@ -1627,8 +1821,8 @@
       explanation: 0
     };
     
-    // 모든 블록을 순회하며 번호 재할당
-    selectedBlocks.forEach(block => {
+    // 정렬된 순서대로 번호 재할당
+    sortedBlocks.forEach(block => {
       tempCounters[block.type]++;
       const typeInfo = blockTypes.find(t => t.value === block.type);
       block.title = `${typeInfo.label} ${tempCounters[block.type]}`;
@@ -1636,6 +1830,9 @@
     
     // 전역 카운터 업데이트
     blockCounters = tempCounters;
+    
+    // selectedBlocks 배열도 정렬된 순서로 업데이트
+    selectedBlocks = sortedBlocks;
   }
   
   function captureCanvasArea(rect) {
@@ -1799,6 +1996,8 @@
   }
   
   function removeBlock(blockId) {
+    saveToHistory(); // 변경 전 상태 저장
+    
     selectedBlocks = selectedBlocks.filter(block => block.id !== blockId);
     if (checkedBlocks.has(blockId)) {
       checkedBlocks.delete(blockId);
@@ -1956,6 +2155,8 @@
     if (checkedBlocks.size === 0) return;
     
     if (confirm(`선택된 ${checkedBlocks.size}개의 블록을 삭제하시겠습니까?`)) {
+      saveToHistory(); // 변경 전 상태 저장
+      
       selectedBlocks = selectedBlocks.filter(block => !checkedBlocks.has(block.id));
       checkedBlocks.clear();
       
@@ -2197,7 +2398,7 @@
   }
   
   // 키보드 제어 함수들
-  function handleKeyDown(event) {
+  function handleNavigationKeyDown(event) {
     // 블록 영역 지정 단계에서 화살표 키로 페이지 이동
     if (extractionStep === 'extract-blocks' && !isSelecting) {
       switch (event.key) {
@@ -2686,6 +2887,11 @@
                       {#if extractionMode === 'manual' && selectedBlocks.length === 0}
                         <div class="absolute top-2 left-2 bg-blue-500 text-white px-3 py-1 rounded-md text-sm">
                           영역을 드래그하여 선택하세요
+                        </div>
+                      {/if}
+                      {#if selectedBlocks.length > 0}
+                        <div class="absolute bottom-2 left-2 bg-gray-800 text-white px-3 py-1 rounded-md text-xs opacity-75">
+                          Shift + 드래그: 블록 이동 | ← → : 페이지 이동
                         </div>
                       {/if}
                     </div>

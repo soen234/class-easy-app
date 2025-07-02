@@ -185,21 +185,19 @@
     if (!$user?.id) return;
     
     try {
-      const token = localStorage.getItem('sb-access-token') || 
-                    document.cookie.match(/sb-lyjmljtnbodquvwkoizz-auth-token=([^;]+)/)?.[1];
+      // Supabase로 직접 폴더 조회
+      const { data, error } = await supabase
+        .from('folders')
+        .select('*')
+        .eq('user_id', $user.id)
+        .eq('type', type)
+        .order('name');
       
-      const response = await fetch(`/api/folders?type=${type}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        folders = result.data || [];
-        console.log('Loaded folders:', folders.length);
+      if (error) {
+        console.error('Failed to load folders:', error);
       } else {
-        console.error('Failed to load folders:', response.status, await response.text());
+        folders = data || [];
+        console.log('Loaded folders:', folders.length);
       }
     } catch (error) {
       console.error('Error loading folders:', error);
@@ -333,8 +331,7 @@
       // updateMaterial 함수 사용
       const updates = {
         title: editingMaterial.title.trim(),
-        subject: editingMaterial.subject,
-        folder_path: editingMaterial.folder_path || '/'
+        subject: editingMaterial.subject
       };
       
       const { data, error } = await updateMaterial(editingMaterial.id, updates);
@@ -429,10 +426,14 @@
     e.preventDefault();
     e.currentTarget.style.backgroundColor = '';
     
+    // 안전하게 처리
     if (draggedMaterial && targetMaterial && draggedMaterial.id !== targetMaterial.id) {
+      const draggedTitle = draggedMaterial.title || '자료';
+      const targetPath = targetMaterial.folder_path || '/';
+      
       if (targetMaterial.folder_path && draggedMaterial.folder_path !== targetMaterial.folder_path) {
-        console.log(`Moving ${draggedMaterial.title} to ${targetMaterial.folder_path}`);
-        alert(`"${draggedMaterial.title}"을(를) "${targetMaterial.folder_path}" 폴더로 이동했습니다.`);
+        console.log(`Moving ${draggedTitle} to ${targetPath}`);
+        showToast(`"${draggedTitle}"을(를) "${targetPath}" 폴더로 이동했습니다.`, 'info');
       }
     }
     
@@ -445,48 +446,62 @@
     e.preventDefault();
     e.currentTarget.classList.remove('ring-2', 'ring-primary', 'bg-primary/10');
     
-    if (draggedMaterial && draggedMaterial.folder_id !== folderId) {
-      try {
-        // 개발 모드에서는 로컬 업데이트
-        if (!supabase) {
-          // materials 업데이트
-          const savedMaterials = localStorage.getItem('materials');
-          const allMaterials = savedMaterials ? JSON.parse(savedMaterials) : [];
-          const updatedMaterials = allMaterials.map(m => 
-            m.id === draggedMaterial.id ? { ...m, folder_id: folderId } : m
-          );
-          localStorage.setItem('materials', JSON.stringify(updatedMaterials));
-          
-          const folder = folders.find(f => f.id === folderId);
-          const folderName = folder ? folder.name : '루트';
-          
-          // 토스트 메시지 표시
-          showToast(`"${draggedMaterial.title}"을(를) "${folderName}" 폴더로 이동했습니다.`, 'success');
-          loadMaterials();
-        } else {
-          const response = await fetch(`/api/materials/${draggedMaterial.id}`, {
-            method: 'PATCH',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${localStorage.getItem('sb-access-token')}`
-            },
-            body: JSON.stringify({ folder_id: folderId })
-          });
-          
-          if (response.ok) {
-            const folder = folders.find(f => f.id === folderId);
-            showToast(`"${draggedMaterial.title}"을(를) "${folder.name}" 폴더로 이동했습니다.`, 'success');
-            loadMaterials();
-          }
-        }
-      } catch (error) {
-        console.error('Error moving material:', error);
-        showToast('자료 이동 중 오류가 발생했습니다.', 'error');
-      }
+    // draggedMaterial이 없으면 종료
+    if (!draggedMaterial) {
+      console.log('No material being dragged');
+      return false;
     }
     
-    draggedMaterial = null;
-    dropTarget = null;
+    // 같은 폴더로 이동하는 경우 종료
+    if (draggedMaterial.folder_id === folderId) {
+      draggedMaterial = null;
+      dropTarget = null;
+      return false;
+    }
+    
+    try {
+      // 드래그 중인 자료 정보를 미리 저장
+      const materialTitle = draggedMaterial.title;
+      const materialId = draggedMaterial.id;
+      
+      // 개발 모드에서는 로컬 업데이트
+      if (!supabase) {
+        // materials 업데이트
+        const savedMaterials = localStorage.getItem('materials');
+        const allMaterials = savedMaterials ? JSON.parse(savedMaterials) : [];
+        const updatedMaterials = allMaterials.map(m => 
+          m.id === materialId ? { ...m, folder_id: folderId } : m
+        );
+        localStorage.setItem('materials', JSON.stringify(updatedMaterials));
+        
+        const folder = folders.find(f => f.id === folderId);
+        const folderName = folder ? folder.name : '루트';
+        
+        // 토스트 메시지 표시
+        showToast(`"${materialTitle}"을(를) "${folderName}" 폴더로 이동했습니다.`, 'success');
+        loadMaterials();
+      } else {
+        // Supabase로 직접 자료 업데이트
+        const { error } = await updateMaterial(materialId, { folder_id: folderId });
+        
+        if (!error) {
+          const folder = folders.find(f => f.id === folderId);
+          const folderName = folder ? folder.name : '루트';
+          showToast(`"${materialTitle}"을(를) "${folderName}" 폴더로 이동했습니다.`, 'success');
+          loadMaterials();
+        } else {
+          showToast('자료 이동 중 오류가 발생했습니다.', 'error');
+        }
+      }
+    } catch (error) {
+      console.error('Error moving material:', error);
+      showToast('자료 이동 중 오류가 발생했습니다.', 'error');
+    } finally {
+      // 항상 드래그 상태 초기화
+      draggedMaterial = null;
+      dropTarget = null;
+    }
+    
     return false;
   }
   
@@ -545,19 +560,17 @@
           showToast(`"${folder.name}" 폴더가 삭제되었습니다.`, 'success');
           loadFolders();
         } else {
-          const response = await fetch(`/api/folders/${folder.id}`, {
-            method: 'DELETE',
-            headers: {
-              'Authorization': `Bearer ${localStorage.getItem('sb-access-token')}`
-            }
-          });
+          // Supabase로 직접 폴더 삭제
+          const { error } = await supabase
+            .from('folders')
+            .delete()
+            .eq('id', folder.id);
           
-          if (response.ok) {
+          if (error) {
+            showToast(error.message || '폴더 삭제 중 오류가 발생했습니다.', 'error');
+          } else {
             showToast(`"${folder.name}" 폴더가 삭제되었습니다.`, 'success');
             loadFolders();
-          } else {
-            const data = await response.json();
-            showToast(data.error || '폴더 삭제 중 오류가 발생했습니다.', 'error');
           }
         }
       } catch (error) {
@@ -592,23 +605,22 @@
         editingFolder = null;
         loadFolders();
       } else {
-        const response = await fetch(`/api/folders/${editingFolder.id}`, {
-          method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('sb-access-token')}`
-          },
-          body: JSON.stringify({ name: editingFolder.name.trim(), color: editingFolder.color })
-        });
+        // Supabase로 직접 폴더 업데이트
+        const { error } = await supabase
+          .from('folders')
+          .update({ 
+            name: editingFolder.name.trim(), 
+            color: editingFolder.color 
+          })
+          .eq('id', editingFolder.id);
         
-        if (response.ok) {
+        if (error) {
+          showToast(error.message || '폴더 수정 중 오류가 발생했습니다.', 'error');
+        } else {
           showToast(`폴더 이름이 "${editingFolder.name}"(으)로 변경되었습니다.`, 'success');
           showFolderEditModal = false;
           editingFolder = null;
           loadFolders();
-        } else {
-          const data = await response.json();
-          showToast(data.error || '폴더 수정 중 오류가 발생했습니다.', 'error');
         }
       }
     } catch (error) {
@@ -864,6 +876,9 @@
                   {/if}
                   {#if item.file_size}
                     <p>{formatFileSize(item.file_size)}</p>
+                  {/if}
+                  {#if item.pages}
+                    <p>{item.pages}페이지</p>
                   {/if}
                   <p>{formatDate(item.created_at)}</p>
                 </div>

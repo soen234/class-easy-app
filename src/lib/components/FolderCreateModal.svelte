@@ -1,5 +1,7 @@
 <script>
   import { createEventDispatcher } from 'svelte';
+  import { supabase } from '$lib/supabase.js';
+  import { user } from '$lib/stores/auth.js';
   
   export let isOpen = false;
   export let currentPath = '';
@@ -53,27 +55,25 @@
     error = '';
     
     try {
-      const response = await fetch('/api/folders', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('sb-access-token')}`
-        },
-        body: JSON.stringify({
+      // Supabase로 직접 폴더 생성
+      const { data, error: dbError } = await supabase
+        .from('folders')
+        .insert({
+          user_id: $user.id,
           name: folderName.trim(),
           parent_id: parentId,
-          folder_type: folderType,
-          color: selectedColor
+          type: folderType,
+          color: selectedColor,
+          path: currentPath ? `${currentPath}/${folderName.trim()}` : `/${folderName.trim()}`
         })
-      });
+        .select()
+        .single();
       
-      const result = await response.json();
-      
-      if (!response.ok) {
-        throw new Error(result.error || '폴더 생성에 실패했습니다.');
+      if (dbError) {
+        throw new Error(dbError.message || '폴더 생성에 실패했습니다.');
       }
       
-      dispatch('create', result.data);
+      dispatch('create', data);
       handleClose();
       
     } catch (err) {
