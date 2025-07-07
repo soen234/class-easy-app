@@ -49,14 +49,8 @@
   });
   
   function loadRecentProjects() {
-    const stored = localStorage.getItem('userProjects');
-    if (stored) {
-      const projects = JSON.parse(stored);
-      // Sort by last modified and take top 6
-      recentProjects = projects
-        .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
-        .slice(0, 6);
-    }
+    // TODO: Load recent materials from Supabase
+    recentProjects = [];
   }
   
   // Subscribe to template changes
@@ -80,50 +74,16 @@
   
   
   function createBlankProject() {
-    showNewProjectModal = true;
+    // Navigate to create-material with blank template
+    goto('/create-material?template=blank');
   }
   
   function createFromTemplate(template) {
-    // Create a new project with template
-    const projectId = Date.now().toString();
-    const newProject = {
-      id: projectId,
-      name: `${template.name} - 새 프로젝트`,
-      templateId: template.id,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      thumbnail: null,
-      pages: []
-    };
-    
-    // Save to localStorage
-    saveProject(newProject);
-    
-    // Navigate to editor
-    goto(`/editor?projectId=${projectId}&templateId=${template.id}`);
+    // Navigate to create-material with template
+    goto(`/create-material?template=${template.id}`);
   }
   
   function createNewProject() {
-    if (!newProjectData.name) {
-      newProjectData.name = `새 프로젝트 ${new Date().toLocaleDateString()}`;
-    }
-    
-    const projectId = Date.now().toString();
-    const newProject = {
-      id: projectId,
-      name: newProjectData.name,
-      size: newProjectData.size,
-      orientation: newProjectData.orientation,
-      pageCount: newProjectData.pageCount,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      thumbnail: null,
-      pages: []
-    };
-    
-    // Save to localStorage
-    saveProject(newProject);
-    
     // Reset and close modal
     showNewProjectModal = false;
     newProjectData = {
@@ -133,19 +93,14 @@
       pageCount: 1
     };
     
-    // Navigate to editor
-    goto(`/editor?projectId=${projectId}`);
+    // Navigate to create-material with blank template
+    goto('/create-material?template=blank');
   }
   
-  function saveProject(project) {
-    const stored = localStorage.getItem('userProjects');
-    const projects = stored ? JSON.parse(stored) : [];
-    projects.push(project);
-    localStorage.setItem('userProjects', JSON.stringify(projects));
-  }
   
   function openProject(project) {
-    goto(`/editor?projectId=${project.id}`);
+    // For now, redirect to my-materials page
+    goto('/my-materials');
   }
   
   function duplicateProject(project) {

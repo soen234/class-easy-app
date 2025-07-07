@@ -187,6 +187,7 @@
   
   // Canvas properties
   let zoom = 100;
+  let showGrid = false;
   let showGrid = true;
   let showRuler = true;
   let isPanning = false;
@@ -339,6 +340,11 @@
     // Set up auto-save
     setInterval(autoSave, 30000); // Auto-save every 30 seconds
     
+    // Fit to width on initial load
+    setTimeout(() => {
+      fitToWidth();
+    }, 100);
+    
     } catch (error) {
       console.error('Error initializing canvas:', error);
       showToast('캔버스 초기화 중 오류가 발생했습니다.');
@@ -357,11 +363,13 @@
   }
   
   function saveProjectSilently() {
-    if (!projectId) return;
+    if (!projectId || !canvas || !currentPage) return;
     
     // Save current page's canvas data
     const canvasData = canvas.toJSON();
-    currentPage.objects = canvasData.objects;
+    if (currentPage) {
+      currentPage.objects = canvasData.objects;
+    }
     
     // Update project data
     projectData.id = projectId;
@@ -929,6 +937,23 @@
     canvas.requestRenderAll();
   }
   
+  // Fit to window width
+  function fitToWidth() {
+    const container = document.querySelector('.canvas-area');
+    if (!container || !canvas) return;
+    
+    const containerWidth = container.clientWidth - 40; // 20px padding on each side
+    const pageWidth = 794; // A4 width in pixels
+    
+    const newZoom = containerWidth / pageWidth;
+    
+    canvas.setZoom(newZoom);
+    canvas.setWidth(pageWidth * newZoom);
+    canvas.setHeight(1123 * newZoom);
+    zoom = Math.round(newZoom * 100);
+    canvas.requestRenderAll();
+  }
+  
   // Setup context menu
   function setupContextMenu() {
     // Prevent default context menu
@@ -1045,8 +1070,9 @@
       text.enterEditing();
       text.selectAll();
       isDrawing = false;
-      selectedTool = 'select';
-      selectTool('select');
+      // Keep current tool instead of switching to select
+      // selectedTool = 'select';
+      // selectTool('select');
     } else if (selectedTool === 'shape' && selectedShape) {
       // Start drawing shape
       switch (selectedShape.id) {
@@ -1267,9 +1293,9 @@
           canvas.setActiveObject(arrow);
         }
         
-        // Switch back to selection mode
-        selectedTool = 'select';
-        selectTool('select');
+        // Keep current tool instead of switching to select
+        // selectedTool = 'select';
+        // selectTool('select');
         if (drawingObject && drawingObject.type !== 'line') {
           canvas.setActiveObject(drawingObject);
         }
@@ -1439,11 +1465,16 @@
         repeat: 'repeat'
       });
       
-      // Apply grid as overlay
-      canvas.setOverlayColor(pattern, canvas.renderAll.bind(canvas));
+      // Apply grid as overlay image
+      canvas.setOverlayImage(pattern, canvas.renderAll.bind(canvas), {
+        width: canvas.width,
+        height: canvas.height,
+        originX: 'left',
+        originY: 'top'
+      });
     } else {
       // Remove grid
-      canvas.setOverlayColor('', canvas.renderAll.bind(canvas));
+      canvas.setOverlayImage(null, canvas.renderAll.bind(canvas));
     }
   }
   
@@ -1885,6 +1916,16 @@
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+          </svg>
+        </button>
+        
+        <button 
+          class="btn btn-ghost btn-xs"
+          on:click={fitToWidth}
+          title="폭 맞춤"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"></path>
           </svg>
         </button>
         

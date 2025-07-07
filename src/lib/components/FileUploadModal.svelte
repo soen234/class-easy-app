@@ -2,6 +2,7 @@
   import { createEventDispatcher } from 'svelte';
   import { user } from '$lib/stores/auth.js';
   import { saveFile } from '$lib/utils/fileStorage.js';
+  import { supabase } from '$lib/supabase.js';
   
   export let isOpen = false;
   export let currentFolderId = null;
@@ -118,7 +119,11 @@
         });
         
         xhr.open('POST', '/api/materials');
-        xhr.setRequestHeader('Authorization', `Bearer ${localStorage.getItem('sb-access-token')}`);
+        // Get the actual access token from Supabase
+        const session = await supabase.auth.getSession();
+        if (session?.data?.session?.access_token) {
+          xhr.setRequestHeader('Authorization', `Bearer ${session.data.session.access_token}`);
+        }
         xhr.send(formData);
         
         const result = await uploadPromise;

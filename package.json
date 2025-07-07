@@ -25,6 +25,7 @@
     "@sveltejs/kit": "^2.21.5",
     "@types/node": "^24.0.3",
     "daisyui": "^5.0.43",
+    "docx": "^8.5.0",
     "fabric": "^6.7.0",
     "html2canvas": "^1.4.1",
     "jspdf": "^3.0.1",

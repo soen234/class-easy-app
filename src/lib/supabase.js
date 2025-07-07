@@ -65,10 +65,15 @@ export async function signInWithGoogle() {
   if (!supabase) {
     return { data: null, error: new Error('Supabase가 초기화되지 않았습니다.') }
   }
+  // Check if we're in the browser before using window
+  const redirectUrl = typeof window !== 'undefined' 
+    ? `${window.location.origin}/auth/callback`
+    : undefined
+  
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
-      redirectTo: `${window.location.origin}/auth/callback`
+      redirectTo: redirectUrl
     }
   })
   return { data, error }

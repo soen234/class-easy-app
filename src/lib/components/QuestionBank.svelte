@@ -1,9 +1,11 @@
 <script>
   import { onMount } from 'svelte';
+  import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { user } from '$lib/stores/auth.js';
   import { blocks, loading, fetchBlocks, deleteBlock, deleteBlocks, updateBlock, getDifficultyLabel, getBlockTypeLabel, getQuestionSubtypeLabel, getDifficultyBadgeClass, getBlockTypeIcon, getQuestionSubtypeIcon, getAllCustomTags, getAllChapters, collection, addToCollection, removeFromCollection, clearCollection, isInCollection, createThumbnail } from '$lib/stores/blocks.js';
   import { supabase } from '$lib/supabase.js';
+  import TestFormatModal from './TestFormatModal.svelte';
   
   let filteredBlocks = [];
   let displayedBlocks = [];
@@ -18,6 +20,7 @@
   let filterChapters = [];
   let viewType = 'grid';
   let selectedBlocks = new Set();
+  let selectionOrder = []; // 선택 순서를 추적
   let showCreateFromSelected = false;
   let showEditModal = false;
   let editingBlock = null;
@@ -28,6 +31,8 @@
   let showCollectionPanel = true;
   let showDetailModal = false;
   let detailBlock = null;
+  let showTestFormatModal = false;
+  let fromCreateMaterial = false;
   
   // 무한 스크롤 관련 변수
   let itemsPerLoad = 20;
@@ -39,6 +44,11 @@
   $: if ($user?.id) {
     loadBlocks();
   }
+
+  onMount(() => {
+    // create-material에서 왔는지 확인
+    fromCreateMaterial = $page.url.searchParams.get('from') === 'create-material';
+  });
 
   // 선택된 문항이 있을 때만 버튼 표시
   $: showCreateFromSelected = selectedBlocks.size > 0;
@@ -129,17 +139,41 @@
   }
 
   function handleCreateFromSelected() {
-    // 선택된 문항들을 localStorage에 저장
-    const selectedQuestions = filteredBlocks.filter(block => selectedBlocks.has(block.id));
-    localStorage.setItem('selectedQuestions', JSON.stringify(selectedQuestions));
-    goto('/templates?from=question-bank');
+    // 선택된 문항들을 선택 순서대로 가져와서 모달 표시
+    const blocksMap = new Map(filteredBlocks.map(block => [block.id, block]));
+    const selectedQuestions = selectionOrder
+      .filter(id => selectedBlocks.has(id))
+      .map(id => blocksMap.get(id))
+      .filter(block => block !== undefined);
+    
+    if (selectedQuestions.length > 0) {
+      // create-material에서 왔다면 바로 돌아가기
+      if (fromCreateMaterial) {
+        localStorage.setItem('selectedQuestions', JSON.stringify(selectedQuestions));
+        goto('/create-material?from=question-bank');
+      } else {
+        // 일반적인 경우 모달 표시
+        showTestFormatModal = true;
+      }
+    }
+  }
+  
+  function handleTestFormatModalCreate() {
+    // 모달에서 자료 생성 후 선택 초기화
+    selectedBlocks = new Set();
+    selectionOrder = [];
+    showTestFormatModal = false;
   }
 
   function toggleBlockSelection(blockId) {
     if (selectedBlocks.has(blockId)) {
       selectedBlocks.delete(blockId);
+      // 선택 해제 시 순서 배열에서도 제거
+      selectionOrder = selectionOrder.filter(id => id !== blockId);
     } else {
       selectedBlocks.add(blockId);
+      // 선택 시 순서 배열에 추가
+      selectionOrder = [...selectionOrder, blockId];
     }
     selectedBlocks = new Set(selectedBlocks);
   }
@@ -147,8 +181,11 @@
   function toggleAllSelection() {
     if (selectedBlocks.size === filteredBlocks.length) {
       selectedBlocks = new Set();
+      selectionOrder = [];
     } else {
       selectedBlocks = new Set(filteredBlocks.map(block => block.id));
+      // 전체 선택 시 현재 표시된 순서대로 추가
+      selectionOrder = filteredBlocks.map(block => block.id);
     }
   }
   
@@ -157,9 +194,17 @@
     const allDisplayedSelected = displayedBlocks.every(block => selectedBlocks.has(block.id));
     
     if (allDisplayedSelected) {
-      displayedBlocks.forEach(block => selectedBlocks.delete(block.id));
+      displayedBlocks.forEach(block => {
+        selectedBlocks.delete(block.id);
+        selectionOrder = selectionOrder.filter(id => id !== block.id);
+      });
     } else {
-      displayedBlocks.forEach(block => selectedBlocks.add(block.id));
+      displayedBlocks.forEach(block => {
+        if (!selectedBlocks.has(block.id)) {
+          selectedBlocks.add(block.id);
+          selectionOrder = [...selectionOrder, block.id];
+        }
+      });
     }
     selectedBlocks = new Set(selectedBlocks);
   }
@@ -1271,3 +1316,11 @@
     {/if}
   </button>
 {/if}
+
+<!-- 시험지 포맷 설정 모달 -->
+<TestFormatModal 
+  bind:showModal={showTestFormatModal}
+  selectedQuestions={filteredBlocks.filter(block => selectedBlocks.has(block.id))}
+  on:create={handleTestFormatModalCreate}
+  on:cancel={() => showTestFormatModal = false}
+/>

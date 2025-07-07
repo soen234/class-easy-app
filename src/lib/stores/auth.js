@@ -64,10 +64,15 @@ export async function signOut() {
 
 // Google 로그인
 export async function signInWithGoogle() {
+  // Check if we're in the browser before using window
+  const redirectUrl = typeof window !== 'undefined' 
+    ? `${window.location.origin}/auth/callback`
+    : undefined;
+    
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
-      redirectTo: `${window.location.origin}/auth/callback`
+      redirectTo: redirectUrl
     }
   });
   return { data, error };
@@ -75,10 +80,15 @@ export async function signInWithGoogle() {
 
 // GitHub 로그인
 export async function signInWithGitHub() {
+  // Check if we're in the browser before using window
+  const redirectUrl = typeof window !== 'undefined' 
+    ? `${window.location.origin}/auth/callback`
+    : undefined;
+    
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'github',
     options: {
-      redirectTo: `${window.location.origin}/auth/callback`
+      redirectTo: redirectUrl
     }
   });
   return { data, error };
