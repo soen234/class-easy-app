@@ -56,6 +56,8 @@
   let showShapeMenu = false;
   let selectedShape = null;
   let showQuestionSelectModal = false;
+  let showPropertiesPanel = true; // 속성 패널 표시 여부
+  let selectedObject = null; // 선택된 객체
   
   // 포맷 옵션 상태
   let formatOptions = {
@@ -65,7 +67,8 @@
     showDifficulty: 'none',
     showSources: false,
     pageSize: 'A4',
-    showGrid: true
+    showGrid: true,
+    orientation: 'portrait' // 'portrait' or 'landscape'
   };
   
   // formatOptions가 변경될 때마다 로그 (브라우저에서만)
@@ -778,6 +781,19 @@
                         </select>
                       </div>
                       <div class="flex items-center gap-2">
+                        <label class="text-sm">방향:</label>
+                        <div class="btn-group btn-group-xs">
+                          <button 
+                            class="btn {formatOptions.orientation === 'portrait' ? 'btn-active' : ''}"
+                            on:click={() => formatOptions.orientation = 'portrait'}
+                          >세로</button>
+                          <button 
+                            class="btn {formatOptions.orientation === 'landscape' ? 'btn-active' : ''}"
+                            on:click={() => formatOptions.orientation = 'landscape'}
+                          >가로</button>
+                        </div>
+                      </div>
+                      <div class="flex items-center gap-2">
                         <label class="text-sm">단:</label>
                         <select class="select select-xs select-bordered" bind:value={formatOptions.columns}>
                           <option value={1}>1단</option>
@@ -824,9 +840,11 @@
                       }}
                       pageSize={formatOptions.pageSize}
                       showGrid={formatOptions.showGrid}
+                      orientation={formatOptions.orientation}
                       selectedTool={selectedTool}
                       selectedShape={selectedShape}
                       on:contentChange={(e) => materialData.content = e.detail}
+                      on:selection={(e) => selectedObject = e.detail.object}
                     />
                   {:else}
                     <div class="flex items-center justify-center h-full">
@@ -976,6 +994,152 @@
                         </button>
                       </div>
                     {/if}
+                  </div>
+                </div>
+              {/if}
+              
+              <!-- Right Side Panel - Properties -->
+              {#if showPropertiesPanel && selectedObject}
+                <div class="w-80 bg-base-100 rounded-lg shadow-lg overflow-hidden flex flex-col">
+                  <div class="p-4 bg-base-200 border-b">
+                    <div class="flex items-center justify-between">
+                      <h3 class="font-semibold">속성</h3>
+                      <button class="btn btn-ghost btn-xs" on:click={() => showPropertiesPanel = false}>
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="flex-1 overflow-y-auto p-4 space-y-4">
+                    <!-- Text Properties -->
+                    {#if selectedObject.type === 'textbox' || selectedObject.type === 'i-text'}
+                      <div class="form-control">
+                        <label class="label">
+                          <span class="label-text">폰트 크기</span>
+                        </label>
+                        <input 
+                          type="number" 
+                          class="input input-bordered input-sm"
+                          value={selectedObject.fontSize}
+                          on:change={(e) => {
+                            selectedObject.set('fontSize', parseInt(e.target.value));
+                            canvasPreview?.canvas?.renderAll();
+                          }}
+                        />
+                      </div>
+                      
+                      <div class="form-control">
+                        <label class="label">
+                          <span class="label-text">텍스트 색상</span>
+                        </label>
+                        <input 
+                          type="color" 
+                          class="input input-bordered input-sm h-10"
+                          value={selectedObject.fill}
+                          on:change={(e) => {
+                            selectedObject.set('fill', e.target.value);
+                            canvasPreview?.canvas?.renderAll();
+                          }}
+                        />
+                      </div>
+                      
+                      <div class="form-control">
+                        <label class="label">
+                          <span class="label-text">정렬</span>
+                        </label>
+                        <div class="btn-group btn-group-sm">
+                          <button 
+                            class="btn {selectedObject.textAlign === 'left' ? 'btn-active' : ''}"
+                            on:click={() => {
+                              selectedObject.set('textAlign', 'left');
+                              canvasPreview?.canvas?.renderAll();
+                            }}
+                          >왼쪽</button>
+                          <button 
+                            class="btn {selectedObject.textAlign === 'center' ? 'btn-active' : ''}"
+                            on:click={() => {
+                              selectedObject.set('textAlign', 'center');
+                              canvasPreview?.canvas?.renderAll();
+                            }}
+                          >가운데</button>
+                          <button 
+                            class="btn {selectedObject.textAlign === 'right' ? 'btn-active' : ''}"
+                            on:click={() => {
+                              selectedObject.set('textAlign', 'right');
+                              canvasPreview?.canvas?.renderAll();
+                            }}
+                          >오른쪽</button>
+                        </div>
+                      </div>
+                    {/if}
+                    
+                    <!-- Shape Properties -->
+                    {#if selectedObject.type === 'rect' || selectedObject.type === 'circle' || selectedObject.type === 'triangle' || selectedObject.type === 'polygon'}
+                      <div class="form-control">
+                        <label class="label">
+                          <span class="label-text">채우기 색상</span>
+                        </label>
+                        <input 
+                          type="color" 
+                          class="input input-bordered input-sm h-10"
+                          value={selectedObject.fill || '#000000'}
+                          on:change={(e) => {
+                            selectedObject.set('fill', e.target.value);
+                            canvasPreview?.canvas?.renderAll();
+                          }}
+                        />
+                      </div>
+                      
+                      <div class="form-control">
+                        <label class="label">
+                          <span class="label-text">테두리 색상</span>
+                        </label>
+                        <input 
+                          type="color" 
+                          class="input input-bordered input-sm h-10"
+                          value={selectedObject.stroke || '#000000'}
+                          on:change={(e) => {
+                            selectedObject.set('stroke', e.target.value);
+                            canvasPreview?.canvas?.renderAll();
+                          }}
+                        />
+                      </div>
+                      
+                      <div class="form-control">
+                        <label class="label">
+                          <span class="label-text">테두리 두께</span>
+                        </label>
+                        <input 
+                          type="number" 
+                          class="input input-bordered input-sm"
+                          value={selectedObject.strokeWidth || 0}
+                          on:change={(e) => {
+                            selectedObject.set('strokeWidth', parseInt(e.target.value));
+                            canvasPreview?.canvas?.renderAll();
+                          }}
+                        />
+                      </div>
+                    {/if}
+                    
+                    <!-- Common Properties -->
+                    <div class="form-control">
+                      <label class="label">
+                        <span class="label-text">투명도</span>
+                      </label>
+                      <input 
+                        type="range" 
+                        class="range range-sm"
+                        min="0"
+                        max="100"
+                        value={selectedObject.opacity * 100}
+                        on:input={(e) => {
+                          selectedObject.set('opacity', e.target.value / 100);
+                          canvasPreview?.canvas?.renderAll();
+                        }}
+                      />
+                      <div class="text-xs text-center mt-1">{Math.round(selectedObject.opacity * 100)}%</div>
+                    </div>
                   </div>
                 </div>
               {/if}

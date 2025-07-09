@@ -15,6 +15,7 @@
   export let showGrid = true;
   export let selectedTool = 'select';
   export let selectedShape = null;
+  export let orientation = 'portrait';
   
   let canvasElement;
   let canvas;
@@ -81,7 +82,17 @@
   function initializeCanvas() {
     if (!canvasElement || !fabric) return;
     
-    const paperSize = PAPER_SIZES[pageSize];
+    let paperSize = PAPER_SIZES[pageSize];
+    
+    // Apply orientation
+    if (orientation === 'landscape' || (formatOptions && formatOptions.orientation === 'landscape')) {
+      paperSize = {
+        width: paperSize.height,
+        height: paperSize.width
+      };
+    } else {
+      paperSize = { ...paperSize };
+    }
     
     // Calculate initial zoom to fit width
     const scaleX = containerWidth / paperSize.width;
@@ -89,6 +100,7 @@
     zoom = Math.max(10, Math.min(200, zoom)); // Clamp between 10% and 200%
     
     console.log('Paper size:', paperSize.width, 'x', paperSize.height);
+    console.log('Orientation:', orientation || formatOptions.orientation || 'portrait');
     console.log('Initial zoom:', Math.round(zoom) + '%');
     
     canvas = new fabric.Canvas(canvasElement, {
@@ -96,7 +108,9 @@
       height: paperSize.height * (zoom / 100),
       backgroundColor: '#ffffff',
       selection: true, // Enable selection for drag and drop
-      renderOnAddRemove: false // Improve performance
+      renderOnAddRemove: false, // Improve performance
+      enableRetinaScaling: true, // Enable high DPI support
+      imageSmoothingEnabled: true // Enable image smoothing
     });
     
     // Set up event handlers for drag and drop
@@ -131,6 +145,37 @@
       updateContainerDimensions();
       initializeCanvas();
     });
+    
+    // Add keyboard event listener for delete
+    const handleKeyDown = (e) => {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && canvas) {
+        // Check if any text object is being edited
+        const activeObject = canvas.getActiveObject();
+        if (activeObject && activeObject.isEditing) {
+          // Don't delete object if text is being edited
+          return;
+        }
+        
+        const activeObjects = canvas.getActiveObjects();
+        if (activeObjects.length > 0) {
+          e.preventDefault();
+          activeObjects.forEach(obj => {
+            canvas.remove(obj);
+            // Remove from pages array
+            if (pages[currentPageIndex]) {
+              const index = pages[currentPageIndex].objects.indexOf(obj);
+              if (index > -1) {
+                pages[currentPageIndex].objects.splice(index, 1);
+              }
+            }
+          });
+          canvas.discardActiveObject();
+          canvas.renderAll();
+        }
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
     
     // Handle window resize
     const handleWindowResize = debounce(() => {
@@ -181,6 +226,7 @@
     
     return () => {
       window.removeEventListener('resize', handleWindowResize);
+      window.removeEventListener('keydown', handleKeyDown);
       if (resizeObserver) {
         resizeObserver.disconnect();
       }
@@ -233,15 +279,25 @@
   function updatePreview() {
     if (!canvas) return;
     
-    console.log('updatePreview called');
+    console.log('updatePreview called with', blocks.length, 'blocks');
+    
+    // Clear previous pages to avoid duplication
+    pages = [];
     
     // Calculate layout
     pages = calculateGridLayout(blocks, pageSize, formatOptions);
+    
+    console.log('Generated', pages.length, 'pages');
     
     // Add test header to first page if test info exists
     if (pages.length > 0 && testInfo.title) {
       const headerObjects = createTestHeader(testInfo, pageSize);
       pages[0].objects = [...headerObjects, ...pages[0].objects];
+    }
+    
+    // Ensure current page index is valid
+    if (currentPageIndex >= pages.length) {
+      currentPageIndex = Math.max(0, pages.length - 1);
     }
     
     // Display current page
@@ -252,11 +308,14 @@
     if (!canvas || !pages[pageIndex]) return;
     
     console.log('displayPage called for page:', pageIndex);
+    console.log('Objects before clear:', canvas.getObjects().length);
     
     // Clear all objects from canvas
     canvas.clear();
     canvas.discardActiveObject();
     canvas.renderAll();
+    
+    console.log('Objects after clear:', canvas.getObjects().length);
     
     // Add grid if enabled
     if (showGrid) {
@@ -281,15 +340,25 @@
     // Process objects and load images
     const processedObjects = await processObjectsWithImages(pages[pageIndex].objects);
     
+    console.log('Adding', processedObjects.length, 'objects to canvas');
+    
     // Add processed objects to canvas
-    processedObjects.forEach(obj => {
-      obj.selectable = true;  // Enable selection for drag and drop
-      obj.evented = true;     // Enable events
-      obj.hasControls = false; // Disable resize controls
-      obj.hasBorders = true;   // Show borders when selected
+    processedObjects.forEach((obj, index) => {
+      // Add unique ID to track objects
+      obj._uniqueId = `${pageIndex}_${index}_${Date.now()}`;
+      
+      // Ensure all objects have proper selection attributes
+      obj.set({
+        selectable: true,
+        evented: true,
+        hasControls: true,  // Enable resize controls
+        hasBorders: true,
+        lockScalingFlip: true
+      });
       canvas.add(obj);
     });
     
+    console.log('Total objects on canvas:', canvas.getObjects().length);
     canvas.renderAll();
   }
   
@@ -299,50 +368,25 @@
     console.log('Processing objects with images:', objects.length);
     
     for (const obj of objects) {
-      if (obj.type === 'group') {
-        // Process group objects
-        const groupObjects = obj.getObjects();
-        const newGroupObjects = [];
-        
-        console.log('Processing group with', groupObjects.length, 'objects');
-        
-        for (const subObj of groupObjects) {
-          console.log('SubObj type:', subObj.type, 'isImagePlaceholder:', subObj.isImagePlaceholder, 'imageUrl:', subObj.imageUrl);
-          
-          if (subObj.isImagePlaceholder && subObj.imageUrl) {
-            // Load image and replace placeholder
-            const img = await loadImage(subObj.imageUrl, subObj.imagePosition);
-            if (img) {
-              // Replace placeholder with image, don't add both
-              newGroupObjects.push(img);
-            } else {
-              console.warn('Failed to load image, keeping placeholder');
-              newGroupObjects.push(subObj); // Keep placeholder if image fails
-            }
-          } else if (subObj.type === 'image') {
-            // If it's already an image, just add it
-            newGroupObjects.push(subObj);
-          } else {
-            // For all other objects (text, rect without imageUrl, etc.)
-            newGroupObjects.push(subObj);
-          }
+      // Process image placeholders
+      if (obj.isImagePlaceholder && obj.imageUrl) {
+        // Load image and replace placeholder
+        const img = await loadImage(obj.imageUrl, obj.imagePosition);
+        if (img) {
+          // Set proper attributes for the loaded image
+          img.set({
+            selectable: true,
+            hasControls: true,
+            hasBorders: true,
+            lockScalingFlip: true
+          });
+          processedObjects.push(img);
+        } else {
+          console.warn('Failed to load image, keeping placeholder');
+          processedObjects.push(obj); // Keep placeholder if image fails
         }
-        
-        // Create new group with processed objects
-        const newGroup = new fabric.Group(newGroupObjects, {
-          left: obj.left,
-          top: obj.top,
-          angle: obj.angle,
-          scaleX: obj.scaleX,
-          scaleY: obj.scaleY,
-          selectable: true,  // Enable selection
-          evented: true,     // Enable events
-          hasControls: false, // Disable resize controls
-          hasBorders: true   // Show borders when selected
-        });
-        
-        processedObjects.push(newGroup);
       } else {
+        // For all other objects, just add them
         processedObjects.push(obj);
       }
     }
@@ -363,9 +407,14 @@
       
       img.onload = function() {
         console.log('Image loaded, creating fabric image');
-        const fabricImg = new fabric.Image(img);
+        console.log('Original image size:', img.width, 'x', img.height);
         
-        // Calculate scale to fit position
+        const fabricImg = new fabric.Image(img, {
+          objectCaching: false, // Disable caching for better quality
+          imageSmoothing: true
+        });
+        
+        // Calculate scale to fit position while maintaining quality
         const scale = Math.min(
           pos.width / img.width,
           pos.height / img.height
@@ -376,11 +425,22 @@
           top: pos.y,
           scaleX: scale,
           scaleY: scale,
-          selectable: false,
-          evented: false
+          selectable: true,
+          evented: true,
+          hasControls: true,
+          hasBorders: true,
+          lockScalingFlip: true
         });
         
-        console.log('Fabric image created successfully');
+        // Set filter for better quality
+        fabricImg.filters.push(new fabric.Image.filters.Resize({
+          resizeType: 'hermite',
+          scaleX: scale,
+          scaleY: scale
+        }));
+        fabricImg.applyFilters();
+        
+        console.log('Fabric image created successfully with scale:', scale);
         resolve(fabricImg);
       };
       
@@ -496,22 +556,51 @@
     
     // Selection created
     canvas.on('selection:created', function(options) {
-      // Allow single object selection for dragging
-      if (options.selected && options.selected.length === 1) {
-        options.selected[0].set({
-          hasControls: false,
-          hasBorders: true,
-          borderColor: '#1a73e8',
-          borderScaleFactor: 2
+      // Ensure controls are visible
+      if (options.selected) {
+        options.selected.forEach(obj => {
+          obj.set({
+            hasControls: true,
+            hasBorders: true,
+            borderColor: '#1a73e8',
+            borderScaleFactor: 2
+          });
         });
+        canvas.renderAll();
+        
+        // Emit selection event to parent
+        const event = new CustomEvent('selection', {
+          detail: { object: options.selected[0] }
+        });
+        canvasElement.dispatchEvent(event);
       }
     });
     
     // Selection cleared
     canvas.on('selection:cleared', function() {
       canvas.renderAll();
+      
+      // Emit selection cleared event to parent
+      const event = new CustomEvent('selection', {
+        detail: { object: null }
+      });
+      canvasElement.dispatchEvent(event);
+    });
+    
+    // Selection updated
+    canvas.on('selection:updated', function(options) {
+      if (options.selected && options.selected.length > 0) {
+        // Emit selection event to parent
+        const event = new CustomEvent('selection', {
+          detail: { object: options.selected[0] }
+        });
+        canvasElement.dispatchEvent(event);
+      }
     });
   }
+  
+  // Export canvas for parent component access
+  export { canvas };
   
   function updateObjectPosition(object) {
     // Update the position in the pages array for persistence
@@ -668,21 +757,22 @@
   function fitToWindow() {
     if (!scrollContainer || !canvas) return;
     
-    const dimensionsChanged = updateContainerDimensions();
-    if (!dimensionsChanged) return;
+    // Always update container dimensions
+    updateContainerDimensions();
     
     const paperSize = PAPER_SIZES[pageSize];
     // Fit to width (가로 폭 맞춤)
-    const scaleX = containerWidth / paperSize.width;
+    const padding = 32; // Account for container padding
+    const availableWidth = containerWidth - padding;
+    const scaleX = availableWidth / paperSize.width;
     const newZoom = Math.round(scaleX * 100);
     
-    // Only update if zoom changed
-    if (Math.abs(newZoom - zoom) > 1) {
-      zoom = Math.max(10, Math.min(200, newZoom)); // Clamp between 10% and 200%
-      
-      // Only log when zoom actually changes
-      console.log('FitToWindow - zoom:', zoom + '%');
-    }
+    // Always update zoom for fit to width
+    zoom = Math.max(10, Math.min(200, newZoom)); // Clamp between 10% and 200%
+    console.log('FitToWindow - zoom:', zoom + '%');
+    
+    // Force canvas update
+    updateCanvasZoom();
     
     // Reset scroll to top-left after fitting
     requestAnimationFrame(() => {

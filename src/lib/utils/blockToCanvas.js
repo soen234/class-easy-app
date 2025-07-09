@@ -172,26 +172,35 @@ function createQuestionObject(block, style, formatOptions, position) {
   console.log('Creating question object:', block);
   console.log('Image URL:', block.config?.imageUrl);
   
-  // Question number or title
-  const questionNumber = block.config?.questionNumber || block.index || '1';
-  const questionTitle = block.title || `${questionNumber}.`;
-  const numberText = new fabric.Text(questionTitle.includes('.') ? questionTitle : `${questionTitle}.`, {
-    ...style,
-    left: x,
-    top: currentY,
-    fontWeight: 'bold'
-  });
-  objects.push(numberText);
-  
-  // Question content (only if there's text content)
-  const contentWidth = (formatOptions.columns === 2) ? 250 : 500;
+  // Only add question number if there's actual content
   if (block.content && block.content.trim() !== '') {
+    // Question number or title
+    const questionNumber = block.config?.questionNumber || block.index || '1';
+    const questionTitle = block.title || `${questionNumber}.`;
+    const numberText = new fabric.Text(questionTitle.includes('.') ? questionTitle : `${questionTitle}.`, {
+      ...style,
+      left: x,
+      top: currentY,
+      fontWeight: 'bold',
+      selectable: true,
+      hasControls: true,
+      hasBorders: true,
+      lockScalingFlip: true
+    });
+    objects.push(numberText);
+    
+    // Question content
+    const contentWidth = (formatOptions.columns === 2) ? 250 : 500;
     const questionText = new fabric.Textbox(block.content, {
       ...style,
       left: x + 30,
       top: currentY,
       width: contentWidth,
-      editable: true
+      editable: true,
+      selectable: true,
+      hasControls: true,
+      hasBorders: true,
+      lockScalingFlip: true
     });
     objects.push(questionText);
     currentY += questionText.height + 10;
@@ -201,10 +210,11 @@ function createQuestionObject(block, style, formatOptions, position) {
   if (block.config && block.config.imageUrl) {
     console.log('Creating image placeholder for:', block.config.imageUrl);
     
+    const contentWidth = (formatOptions.columns === 2) ? 250 : 500;
     // Create a simple rectangle as placeholder with metadata
     const imagePlaceholder = new fabric.Rect({
-      left: x + 30,  // Absolute position for ungrouped object
-      top: currentY,  // Absolute position
+      left: x + 30,
+      top: currentY,
       width: contentWidth,
       height: 200,
       fill: '#f0f0f0',
@@ -213,17 +223,12 @@ function createQuestionObject(block, style, formatOptions, position) {
       // Store image URL and position info for later loading
       imageUrl: block.config.imageUrl,
       isImagePlaceholder: true,
-      imagePosition: { x: x + 30, y: currentY, width: contentWidth, height: 200 }
+      imagePosition: { x: x + 30, y: currentY, width: contentWidth, height: 200 },
+      selectable: true,
+      hasControls: true,
+      hasBorders: true,
+      lockScalingFlip: true
     });
-    
-    // For grouped objects, adjust position
-    if (objects.length > 0) {
-      imagePlaceholder.set({
-        left: 30,  // Relative to group
-        top: currentY - y  // Relative to group
-      });
-      imagePlaceholder.imagePosition = { x: 30, y: currentY - y, width: contentWidth, height: 200 };
-    }
     
     objects.push(imagePlaceholder);
     currentY += 210; // Add space for image
@@ -293,14 +298,8 @@ function createQuestionObject(block, style, formatOptions, position) {
   };
   currentY += spacing[formatOptions.questionSpacing || 'normal'];
   
-  // Group all objects
-  const group = new fabric.Group(objects, {
-    left: x,
-    top: y,
-    selectable: true
-  });
-  
-  return { object: group, height: currentY - y };
+  // Return individual objects instead of group
+  return { objects: objects, height: currentY - y };
 }
 
 // Create passage object
@@ -333,13 +332,22 @@ function createPassageObject(block, style, formatOptions, position) {
   // Adjust background height
   background.set('height', passageText.height + 20);
   
-  const group = new fabric.Group([background, passageText], {
-    left: x,
-    top: y,
-    selectable: true
+  // Set proper attributes for individual objects
+  background.set({
+    selectable: true,
+    hasControls: true,
+    hasBorders: true,
+    lockScalingFlip: true
   });
   
-  return { object: group, height: background.height + 20 };
+  passageText.set({
+    selectable: true,
+    hasControls: true,
+    hasBorders: true,
+    lockScalingFlip: true
+  });
+  
+  return { objects: [background, passageText], height: background.height + 20 };
 }
 
 // Create concept object
@@ -457,7 +465,18 @@ export function calculateGridLayout(blocks, pageSize, formatOptions) {
     return [];
   }
   
-  const paperSize = PAPER_SIZES[pageSize] || PAPER_SIZES.A4;
+  let paperSize = PAPER_SIZES[pageSize] || PAPER_SIZES.A4;
+  
+  // Apply orientation
+  if (formatOptions.orientation === 'landscape') {
+    paperSize = {
+      width: paperSize.height,
+      height: paperSize.width
+    };
+  } else {
+    // Ensure portrait orientation (default)
+    paperSize = { ...paperSize };
+  }
   const workArea = {
     width: paperSize.width - MARGINS.left - MARGINS.right,
     height: paperSize.height - MARGINS.top - MARGINS.bottom
@@ -481,16 +500,22 @@ export function calculateGridLayout(blocks, pageSize, formatOptions) {
     }
     
     // Convert block to canvas object
-    const { object, height } = convertBlockToCanvasObject(
+    const result = convertBlockToCanvasObject(
       block, 
       formatOptions, 
       { x: currentX, y: currentY }
     );
     
-    // Skip if object is null
-    if (!object) return;
+    // Skip if no result
+    if (!result) return;
     
-    // Check if object fits in current column
+    const { objects, object, height } = result;
+    const objectsToAdd = objects || (object ? [object] : []);
+    
+    // Skip if no objects to add
+    if (objectsToAdd.length === 0) return;
+    
+    // Check if objects fit in current column
     if (currentY + height > paperSize.height - MARGINS.bottom) {
       // Move to next column or page
       currentColumn++;
@@ -508,12 +533,12 @@ export function calculateGridLayout(blocks, pageSize, formatOptions) {
       currentX = MARGINS.left + (currentColumn * (columnWidth + columnGap));
     }
     
-    // Place object
-    object.set({
-      left: currentX,
-      top: currentY
+    // Add all objects individually
+    objectsToAdd.forEach(obj => {
+      if (obj) {
+        currentPage.objects.push(obj);
+      }
     });
-    currentPage.objects.push(object);
     
     // Update position
     currentY += height;

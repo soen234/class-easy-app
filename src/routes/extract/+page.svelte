@@ -1838,13 +1838,40 @@
   function captureCanvasArea(rect) {
     if (!canvas || !ctx) return null;
     
+    // rect가 이미 화면 좌표계인 경우 (마우스 이벤트에서 온 경우)
+    // baseScale로 정규화된 좌표인 경우 (저장된 블록에서 온 경우) 구분 필요
+    // drawExistingBlocks 등에서 사용할 때는 이미 스케일이 적용된 좌표
+    let scaledRect;
+    
+    // rect가 저장된 블록의 selection인지 확인
+    const isNormalizedCoords = rect.normalized || false;
+    
+    if (isNormalizedCoords) {
+      // 저장된 블록의 selection (정규화된 좌표)인 경우
+      const scaleRatio = currentScale / baseScale;
+      scaledRect = {
+        x: rect.x * scaleRatio,
+        y: rect.y * scaleRatio,
+        width: rect.width * scaleRatio,
+        height: rect.height * scaleRatio
+      };
+    } else {
+      // 마우스 이벤트 등에서 온 화면 좌표인 경우
+      scaledRect = {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height
+      };
+    }
+    
     // 고해상도를 위한 스케일 팩터
     const scaleFactor = 2; // 2배 해상도
     
     // 임시 캔버스 생성
     const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = rect.width * scaleFactor;
-    tempCanvas.height = rect.height * scaleFactor;
+    tempCanvas.width = scaledRect.width * scaleFactor;
+    tempCanvas.height = scaledRect.height * scaleFactor;
     const tempCtx = tempCanvas.getContext('2d');
     
     // 고품질 렌더링 설정
@@ -1854,11 +1881,11 @@
     // 스케일 적용
     tempCtx.scale(scaleFactor, scaleFactor);
     
-    // 선택 영역 복사
+    // 선택 영역 복사 (스케일된 좌표 사용)
     tempCtx.drawImage(
       canvas,
-      rect.x, rect.y, rect.width, rect.height,
-      0, 0, rect.width, rect.height
+      scaledRect.x, scaledRect.y, scaledRect.width, scaledRect.height,
+      0, 0, scaledRect.width, scaledRect.height
     );
     
     // 높은 품질로 base64 변환
@@ -2008,6 +2035,45 @@
     recalculateBlockNumbers();
     
     drawExistingBlocks();
+  }
+  
+  // 블록을 다시 캡처하는 함수
+  function recaptureBlock(block) {
+    if (!block || !block.selection || !canvas || !ctx) return;
+    
+    // 현재 페이지가 블록의 페이지와 다르면 페이지 이동
+    if (currentPage !== block.page) {
+      alert(`${block.page} 페이지로 이동한 후 다시 시도해주세요.`);
+      return;
+    }
+    
+    // 현재 스케일에 맞춰 블록의 화면 좌표 계산
+    const scaleRatio = currentScale / baseScale;
+    const scaledRect = {
+      x: block.selection.x * scaleRatio,
+      y: block.selection.y * scaleRatio,
+      width: block.selection.width * scaleRatio,
+      height: block.selection.height * scaleRatio
+    };
+    
+    // 캡처 실행
+    const newImageData = captureCanvasArea(scaledRect);
+    
+    if (newImageData) {
+      // 블록의 이미지 데이터 업데이트
+      selectedBlocks = selectedBlocks.map(b => {
+        if (b.id === block.id) {
+          return { ...b, imageData: newImageData };
+        }
+        return b;
+      });
+      
+      // 자동 저장
+      autoSaveBlocks();
+      
+      // 성공 메시지
+      console.log(`블록 "${block.title}" 이미지가 다시 캡처되었습니다.`);
+    }
   }
   
   // 체크박스 상태 변경
@@ -2785,20 +2851,26 @@
                     </button>
                   </div>
                   
-                  {#if extractionMode === 'auto'}
-                    <button 
-                      class="btn btn-primary btn-sm" 
-                      on:click={autoExtractBlocks}
-                      disabled={isExtracting}
-                    >
-                      {#if isExtracting}
-                        <span class="loading loading-spinner loading-xs"></span>
-                        추출 중...
-                      {:else}
-                        자동 문항 추출
-                      {/if}
-                    </button>
-                  {/if}
+                  <button 
+                    class="btn btn-primary btn-sm" 
+                    on:click={() => {
+                      if (extractionMode !== 'auto') {
+                        setExtractionMode('auto');
+                      }
+                      autoExtractBlocks();
+                    }}
+                    disabled={isExtracting}
+                  >
+                    {#if isExtracting}
+                      <span class="loading loading-spinner loading-xs"></span>
+                      추출 중...
+                    {:else}
+                      <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                      </svg>
+                      자동 문항 추출
+                    {/if}
+                  </button>
                 </div>
                 
                 <!-- 줌 컨트롤 -->
@@ -3047,6 +3119,15 @@
                           {/each}
                         </div>
                         <div class="flex-1"></div>
+                        <button 
+                          class="btn btn-ghost btn-xs btn-circle hover:bg-primary hover:text-white"
+                          title="블록 다시 캡처"
+                          on:click={() => recaptureBlock(block)}
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M19 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10h-4v4h-2v-4H7v-2h4V7h2v4h4v2z"/>
+                          </svg>
+                        </button>
                         <button 
                           class="btn btn-ghost btn-xs btn-circle text-error hover:bg-error hover:text-white"
                           title="블록 삭제"
@@ -3389,6 +3470,12 @@
                               bind:value={block.answer}
                               on:focus={() => { selectedRowIndex = index; currentFieldName = 'answer'; isEditingCell = true; }}
                               on:blur={() => { isEditingCell = false; }}
+                              on:keydown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  moveToNextRow();
+                                }
+                              }}
                             >
                           {:else}
                             <span class="text-xs text-base-content/50">-</span>
