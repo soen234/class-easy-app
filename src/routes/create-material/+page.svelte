@@ -5,6 +5,7 @@
   import { user } from '$lib/stores/auth.js';
   import { materials, createMaterial, getFolderStructure } from '$lib/stores/materials.js';
   import { templates, getCategoryLabel, getDifficultyLabel } from '$lib/stores/templates.js';
+  import { getBlockTypeLabel, getDifficultyBadgeClass, getQuestionSubtypeLabel } from '$lib/stores/blocks.js';
   import QuestionSelectModal from '$lib/components/QuestionSelectModal.svelte';
   
   // Lazy load components and functions to avoid SSR issues
@@ -206,16 +207,6 @@
     }
   }
   
-  function handleQuestionsSelected(questions) {
-    selectedQuestions = questions;
-    if (questions.length > 0) {
-      // 다음 단계로 진행
-      if (currentStep < totalSteps) {
-        currentStep++;
-        addQuestionsToContent();
-      }
-    }
-  }
   
   function prevStep() {
     if (currentStep > 1) {
@@ -434,6 +425,34 @@
         break;
     }
   }
+  
+  // 문항 제거 함수
+  function removeQuestion(index) {
+    selectedQuestions = selectedQuestions.filter((_, i) => i !== index);
+    // localStorage 업데이트
+    if (fromQuestionBank) {
+      localStorage.setItem('selectedQuestions', JSON.stringify(selectedQuestions));
+    }
+  }
+  
+  // 모든 문항 삭제
+  function clearAllQuestions() {
+    if (confirm('모든 문항을 삭제하시겠습니까?')) {
+      selectedQuestions = [];
+      if (fromQuestionBank) {
+        localStorage.removeItem('selectedQuestions');
+      }
+    }
+  }
+  
+  // 문항 선택 모달에서 선택 완료 시
+  function handleQuestionsSelected(questions) {
+    selectedQuestions = questions;
+    if (fromQuestionBank) {
+      localStorage.setItem('selectedQuestions', JSON.stringify(questions));
+    }
+    showQuestionSelectModal = false;
+  }
 </script>
 
 <svelte:head>
@@ -593,6 +612,82 @@
               </div>
             {/if}
           </div>
+          
+          <!-- 선택된 문항 리스트 -->
+          {#if selectedQuestions.length > 0}
+            <div class="divider">선택된 문항</div>
+            
+            <div class="bg-base-200 rounded-lg p-4">
+              <div class="flex justify-between items-center mb-4">
+                <h3 class="font-semibold">
+                  선택된 문항 ({selectedQuestions.length}개)
+                </h3>
+                <button 
+                  class="btn btn-sm btn-primary"
+                  on:click={() => showQuestionSelectModal = true}
+                >
+                  문항 추가하기
+                </button>
+              </div>
+              
+              <!-- 반응형 그리드 -->
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {#each selectedQuestions as question, index}
+                  <div class="bg-base-100 rounded-lg p-3 relative">
+                    <!-- 문항 번호 -->
+                    <div class="flex items-start gap-3">
+                      <div class="text-lg font-bold text-primary">
+                        {index + 1}.
+                      </div>
+                      
+                      <!-- 문항 정보 -->
+                      <div class="flex-1 min-w-0">
+                        <div class="flex flex-wrap gap-1 mb-1">
+                          <span class="badge badge-sm badge-ghost">
+                            {getQuestionSubtypeLabel(question.subtype)}
+                          </span>
+                          <span class="badge badge-sm {getDifficultyBadgeClass(question.difficulty)}">
+                            {getDifficultyLabel(question.difficulty)}
+                          </span>
+                        </div>
+                        
+                        <!-- 출처 정보 -->
+                        <p class="text-xs text-base-content/60 mb-1">
+                          {question.material_title || '원본 자료'} 
+                          {question.page_number ? `p.${question.page_number}` : ''}
+                        </p>
+                        
+                        <!-- 문항 내용 미리보기 -->
+                        <p class="text-sm line-clamp-2">
+                          {question.content}
+                        </p>
+                      </div>
+                      
+                      <!-- 삭제 버튼 -->
+                      <button 
+                        class="btn btn-ghost btn-xs text-error"
+                        on:click={() => removeQuestion(index)}
+                      >
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                {/each}
+              </div>
+              
+              <!-- 액션 버튼들 -->
+              <div class="flex gap-2 mt-4">
+                <button 
+                  class="btn btn-sm btn-ghost"
+                  on:click={clearAllQuestions}
+                >
+                  전체 삭제
+                </button>
+              </div>
+            </div>
+          {/if}
           
         {:else if currentStep === 2}
           <!-- Step 2: Content Editing -->

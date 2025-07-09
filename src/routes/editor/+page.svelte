@@ -187,7 +187,6 @@
   
   // Canvas properties
   let zoom = 100;
-  let showGrid = false;
   let showGrid = true;
   let showRuler = true;
   let isPanning = false;

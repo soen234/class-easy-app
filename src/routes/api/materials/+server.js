@@ -72,7 +72,7 @@ export async function GET({ url, locals, request, cookies }) {
 }
 
 // POST /api/materials - 자료 업로드
-export async function POST({ request, locals, cookies }) {
+export async function POST({ request, locals, cookies, url }) {
   const user = locals.user;
   
   if (!user) {
@@ -172,6 +172,37 @@ export async function POST({ request, locals, cookies }) {
       await supabase.storage.from('materials-original').remove([fileName]);
       return json({ error: '데이터베이스 저장 실패: ' + dbError.message }, { status: 500 });
     }
+
+    // PDF 파일인 경우 썸네일 생성 (임시로 비활성화)
+    // pdfjs-dist 서버 사이드 문제로 인해 클라이언트 사이드 구현 필요
+    /*
+    if (file.type === 'application/pdf') {
+      try {
+        // 썸네일 생성 API 호출
+        const response = await fetch(`${url.origin}/api/materials/generate-thumbnail`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${accessToken}`
+          },
+          body: JSON.stringify({ materialId: material.id })
+        });
+        
+        if (response.ok) {
+          const { thumbnailUrl, pages } = await response.json();
+          // 썸네일 URL과 페이지 수 업데이트
+          material.thumbnail_url = thumbnailUrl;
+          material.preview_url = thumbnailUrl;
+          material.pages = pages;
+        } else {
+          console.error('Failed to generate thumbnail:', await response.text());
+        }
+      } catch (error) {
+        console.error('Thumbnail generation error:', error);
+        // 썸네일 생성 실패해도 업로드는 성공으로 처리
+      }
+    }
+    */
 
     return json({ data: material }, { status: 201 });
 

@@ -432,13 +432,8 @@
           lockScalingFlip: true
         });
         
-        // Set filter for better quality
-        fabricImg.filters.push(new fabric.Image.filters.Resize({
-          resizeType: 'hermite',
-          scaleX: scale,
-          scaleY: scale
-        }));
-        fabricImg.applyFilters();
+        // In fabric.js v6, image quality is handled automatically
+        // No need for manual resize filters
         
         console.log('Fabric image created successfully with scale:', scale);
         resolve(fabricImg);

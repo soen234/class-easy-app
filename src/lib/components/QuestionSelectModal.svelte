@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { user } from '$lib/stores/auth.js';
-  import { blocks, loading, fetchBlocks, getDifficultyLabel, getBlockTypeLabel, getDifficultyBadgeClass, getBlockTypeIcon, getAllCustomTags, getAllChapters } from '$lib/stores/blocks.js';
+  import { blocks, loading, fetchBlocks, getDifficultyLabel, getBlockTypeLabel, getDifficultyBadgeClass, getBlockTypeIcon, getAllCustomTags, getAllChapters, getQuestionSubtypeLabel } from '$lib/stores/blocks.js';
   
   export let showModal = false;
   export let onSelect = () => {};
@@ -228,67 +228,88 @@
             검색 결과가 없습니다
           </div>
         {:else}
-          <div class="space-y-3">
+          <!-- 카드 그리드 뷰 -->
+          <div class="grid gap-4" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
             {#each filteredBlocks as block}
               <div 
-                class="card bg-base-200 hover:bg-base-300 cursor-pointer transition-colors {selectedBlocks.has(block.id) ? 'ring-2 ring-primary' : ''}"
+                class="card shadow hover:shadow-lg transition-shadow cursor-pointer bg-base-100 {selectedBlocks.has(block.id) ? 'ring-2 ring-primary' : ''}"
+                style="max-width: 350px; border-width: 2px;"
                 on:click={() => toggleBlock(block.id)}
               >
-                <div class="card-body p-4">
-                  <div class="flex items-start gap-3">
+                <div class="card-body p-3">
+                  <!-- 체크박스 -->
+                  <div class="flex items-center justify-between gap-2 mb-2">
                     <input 
                       type="checkbox" 
-                      class="checkbox mt-1"
+                      class="checkbox checkbox-sm"
                       checked={selectedBlocks.has(block.id)}
                       on:click|stopPropagation
                       on:change={() => toggleBlock(block.id)}
                     />
-                    
-                    <div class="flex-1">
-                      <!-- Block Icon and Type -->
-                      <div class="flex items-center gap-2 mb-2">
-                        <svg class="w-5 h-5 text-base-content/70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d={getBlockTypeIcon(block.type)}></path>
-                        </svg>
-                        <span class="text-sm font-medium">{getBlockTypeLabel(block.type)}</span>
-                        {#if block.type === 'question' && block.subtype}
-                          <span class="badge badge-sm">{block.subtype}</span>
-                        {/if}
-                      </div>
-                      
-                      <!-- Content Preview -->
-                      <p class="text-sm line-clamp-2 mb-2">{block.content || ''}</p>
-                      
-                      <!-- Tags and Metadata -->
-                      <div class="flex flex-wrap gap-2 items-center">
-                        <div class="badge {getDifficultyBadgeClass(block.difficulty)} badge-sm">
-                          {getDifficultyLabel(block.difficulty)}
-                        </div>
-                        
-                        {#if block.tags && block.tags.length > 0}
-                          {#each block.tags.slice(0, 3) as tag}
-                            <div class="badge badge-outline badge-sm">{tag}</div>
-                          {/each}
-                        {/if}
-                        
-                        {#if block.custom_tags && block.custom_tags.length > 0}
-                          {#each block.custom_tags.slice(0, 2) as tag}
-                            <div class="badge badge-info badge-sm">{tag}</div>
-                          {/each}
-                        {/if}
-                        
-                        {#if block.chapter}
-                          <div class="badge badge-warning badge-sm">{block.chapter}</div>
-                        {/if}
-                      </div>
-                    </div>
-                    
-                    {#if block.image_data}
-                      <div class="w-20 h-20 bg-base-300 rounded overflow-hidden flex-shrink-0">
-                        <img src={block.image_data} alt="Block thumbnail" class="w-full h-full object-cover" />
+                  </div>
+                  
+                  <!-- 출처와 문제 번호 -->
+                  <div class="mb-2">
+                    <p class="text-sm font-semibold text-gray-700 truncate" title={block.material_title}>
+                      {block.material_title || '원본 자료'}
+                    </p>
+                    <p class="text-xs text-gray-500">
+                      p.{block.page_number || '?'} {block.title || ''}
+                    </p>
+                  </div>
+                  
+                  <!-- 블록 정보 배지들 -->
+                  <div class="flex flex-wrap gap-1 mb-1">
+                    {#if block.type === 'question' && block.subtype}
+                      <div class="badge badge-sm badge-ghost">
+                        {getQuestionSubtypeLabel(block.subtype)}
                       </div>
                     {/if}
+                    <div class="badge {getDifficultyBadgeClass(block.difficulty)} badge-sm">
+                      {getDifficultyLabel(block.difficulty)}
+                    </div>
+                    {#if block.score}
+                      <div class="badge badge-info badge-sm">{block.score}점</div>
+                    {/if}
                   </div>
+                  
+                  <!-- 이미지 미리보기 -->
+                  {#if block.image_data}
+                    <div class="mb-1">
+                      <img 
+                        src={block.image_data} 
+                        alt="문항 이미지"
+                        class="w-full h-32 object-contain rounded border border-base-300 bg-gray-50"
+                        loading="lazy"
+                      />
+                    </div>
+                  {/if}
+                  
+                  <!-- 내용 미리보기 -->
+                  <p class="text-sm line-clamp-2 mb-1">{block.content || ''}</p>
+                  
+                  <!-- 추가 메타데이터 -->
+                  {#if block.chapter}
+                    <p class="text-xs text-base-content/50 truncate mb-1">
+                      단원: {block.chapter}
+                    </p>
+                  {/if}
+                  
+                  <!-- 태그들 -->
+                  {#if (block.tags && block.tags.length > 0) || (block.custom_tags && block.custom_tags.length > 0)}
+                    <div class="flex flex-wrap gap-1 mt-2">
+                      {#if block.tags && block.tags.length > 0}
+                        {#each block.tags.slice(0, 2) as tag}
+                          <div class="badge badge-outline badge-xs">{tag}</div>
+                        {/each}
+                      {/if}
+                      {#if block.custom_tags && block.custom_tags.length > 0}
+                        {#each block.custom_tags.slice(0, 2) as tag}
+                          <div class="badge badge-info badge-xs">{tag}</div>
+                        {/each}
+                      {/if}
+                    </div>
+                  {/if}
                 </div>
               </div>
             {/each}

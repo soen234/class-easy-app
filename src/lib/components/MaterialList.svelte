@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { user } from '$lib/stores/auth.js';
-  import { materials, loading, fetchMaterials, deleteMaterial, updateMaterial, formatFileSize, getFileTypeIcon, getFileTypeColor } from '$lib/stores/materials.js';
+  import { materials, loading, fetchMaterials, deleteMaterial, deleteMaterials, updateMaterial, formatFileSize, getFileTypeIcon, getFileTypeColor } from '$lib/stores/materials.js';
   import { supabase } from '$lib/supabase.js';
   import FolderCreateModal from './FolderCreateModal.svelte';
   import FileUploadModal from './FileUploadModal.svelte';
@@ -766,15 +766,25 @@
         <button class="btn btn-sm btn-ghost" on:click={clearSelection}>선택 해제</button>
       </div>
       <div class="flex gap-2">
-        <button class="btn btn-sm btn-error" on:click={() => {
+        <button class="btn btn-sm btn-error" on:click={async () => {
           if (confirm(`선택한 ${selectedItems.size}개 항목을 삭제하시겠습니까?`)) {
-            // 선택된 아이템들 삭제 처리
-            selectedItems.forEach(id => {
+            // 파일 타입인 항목들의 ID만 추출
+            const fileIds = Array.from(selectedItems).filter(id => {
               const item = filteredMaterials.find(m => m.id === id);
-              if (item && item.type === 'file') {
-                handleDelete(item);
-              }
+              return item && item.type === 'file';
             });
+            
+            if (fileIds.length > 0) {
+              // 일괄 삭제 실행
+              const { error } = await deleteMaterials(fileIds);
+              
+              if (error) {
+                showToast('삭제 중 오류가 발생했습니다.', 'error');
+              } else {
+                showToast(`${fileIds.length}개 파일이 삭제되었습니다.`, 'success');
+              }
+            }
+            
             clearSelection();
           }
         }}>
@@ -867,8 +877,8 @@
   {:else}
     <!-- 자료 목록 -->
     {#if viewType === 'grid'}
-      <!-- 카드 뷰 (수학비서 스타일) -->
-      <div class="grid grid-cols-2 gap-4">
+      <!-- 카드 뷰 -->
+      <div class="grid gap-4" style="grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));">
         {#each filteredMaterials as item}
           {#if item.type === 'folder'}
             <!-- 폴더 카드 -->
@@ -904,106 +914,125 @@
               </div>
             </div>
           {:else}
-            <!-- 파일 카드 (수학비서 스타일) -->
+            <!-- 파일 카드 -->
             <div 
-              class="relative bg-base-100 rounded-lg border border-base-200 hover:shadow-lg transition-all cursor-pointer group"
+              class="relative bg-base-100 rounded-lg border border-base-200 hover:shadow-lg transition-all cursor-pointer group {selectedItems.has(item.id) ? 'ring-2 ring-primary border-primary' : ''}"
+              style="max-width: 400px;"
               draggable="true"
               on:dragstart={(e) => handleDragStart(e, item)}
               on:dragend={handleDragEnd}
+              on:click={() => toggleItemSelection(item.id)}
+              role="button"
+              tabindex="0"
             >
-              <div class="p-4">
-                <!-- 상단: 체크박스와 아이콘 -->
-                <div class="flex items-start justify-between mb-3">
-                  <div class="flex items-start gap-3">
-                    <!-- 체크박스 -->
-                    <input 
-                      type="checkbox" 
-                      class="checkbox checkbox-primary checkbox-sm mt-1"
-                      checked={selectedItems.has(item.id)}
-                      on:click|stopPropagation={() => toggleItemSelection(item.id)}
-                    />
-                    
-                    <!-- 파일 아이콘 -->
-                    <div class="flex flex-col items-center">
-                      {#if getFileIcon(item.file_type) === 'pdf'}
-                        <svg class="w-10 h-10 text-error" fill="currentColor" viewBox="0 0 24 24">
-                          <path d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20M10,17L8,13H10L11,16L12,13H14L12,17V19H10V17Z"/>
-                        </svg>
-                      {:else if getFileIcon(item.file_type) === 'word'}
-                        <svg class="w-10 h-10 text-blue-600" fill="currentColor" viewBox="0 0 24 24">
-                          <path d="M15.5,17H14L12,9.5L10,17H8.5L6.1,7H7.8L9.34,14.5L11.3,7H12.7L14.67,14.5L16.2,7H17.9M19,3H5C3.89,3 3,3.89 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V5C21,3.89 20.1,3 19,3Z"/>
-                        </svg>
-                      {:else if getFileIcon(item.file_type) === 'excel'}
-                        <svg class="w-10 h-10 text-green-600" fill="currentColor" viewBox="0 0 24 24">
-                          <path d="M19,3H5C3.89,3 3,3.89 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V5C21,3.89 20.1,3 19,3M19,5V19H5V5H19M15.78,17H14.22L12,13.8L9.78,17H8.22L11.1,12L8.22,7H9.78L12,10.2L14.22,7H15.78L12.9,12L15.78,17Z"/>
-                        </svg>
-                      {:else if getFileIcon(item.file_type) === 'ppt'}
-                        <svg class="w-10 h-10 text-orange-600" fill="currentColor" viewBox="0 0 24 24">
-                          <path d="M8,7H16A1,1 0 0,1 17,8V10.33C16.03,9.62 14.76,9.23 13.5,9.23A5.23,5.23 0 0,0 8.27,14.46A5.23,5.23 0 0,0 13.5,19.69C14.76,19.69 16.03,19.3 17,18.59V19A1,1 0 0,1 16,20H8A1,1 0 0,1 7,19V8A1,1 0 0,1 8,7M5,3H19A2,2 0 0,1 21,5V19A2,2 0 0,1 19,21H5A2,2 0 0,1 3,19V5A2,2 0 0,1 5,3M10.46,11.24C10.46,9.97 11.36,8.96 12.63,8.96H15.46V10.19H12.79C12.12,10.19 11.79,10.5 11.79,11.11V13.58C11.79,14.18 12.12,14.5 12.79,14.5H15.46V15.73H12.63C11.36,15.73 10.46,14.71 10.46,13.45V11.24Z"/>
-                        </svg>
-                      {:else if getFileIcon(item.file_type) === 'image'}
-                        <svg class="w-10 h-10 text-purple-600" fill="currentColor" viewBox="0 0 24 24">
-                          <path d="M8.5,13.5L11,16.5L14.5,12L19,18H5M21,19V5C21,3.89 20.1,3 19,3H5A2,2 0 0,0 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19Z"/>
-                        </svg>
-                      {:else}
-                        <svg class="w-10 h-10 text-gray-600" fill="currentColor" viewBox="0 0 24 24">
-                          <path d="M13,9V3.5L18.5,9M6,2C4.89,2 4,2.89 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2H6Z"/>
-                        </svg>
-                      {/if}
-                      <span class="text-xs text-base-content/60 mt-1">
-                        {item.file_type ? item.file_type.split('/')[1].toUpperCase() : 'FILE'}
-                      </span>
+              <div class="flex flex-col h-full">
+                <!-- 메인 컨텐츠 영역 -->
+                <div class="flex p-4 gap-4 flex-1">
+                  <!-- 체크박스 (절대 위치) -->
+                  <input 
+                    type="checkbox" 
+                    class="checkbox checkbox-sm absolute top-4 left-4"
+                    checked={selectedItems.has(item.id)}
+                    on:click|stopPropagation={() => toggleItemSelection(item.id)}
+                  />
+                  
+                  <!-- 왼쪽: 프리뷰 이미지 -->
+                  <div class="w-[75px] h-[100px] flex-shrink-0 bg-base-200 rounded border border-base-300 overflow-hidden">
+                    {#if item.preview_url || item.thumbnail_url}
+                      <img 
+                        src={item.preview_url || item.thumbnail_url} 
+                        alt={item.title}
+                        class="w-full h-full object-cover"
+                        loading="lazy"
+                      />
+                    {:else}
+                      <!-- 프리뷰가 없을 때 파일 타입 아이콘 표시 -->
+                      <div class="w-full h-full flex items-center justify-center">
+                        {#if item.file_type?.includes('pdf')}
+                          <svg class="w-8 h-8 text-error" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20M10,17L8,13H10L11,16L12,13H14L12,17V19H10V17Z"/>
+                          </svg>
+                        {:else if item.file_type?.includes('doc')}
+                          <svg class="w-8 h-8 text-blue-600" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M15.5,17H14L12,9.5L10,17H8.5L6.1,7H7.8L9.34,14.5L11.3,7H12.7L14.67,14.5L16.2,7H17.9M19,3H5C3.89,3 3,3.89 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V5C21,3.89 20.1,3 19,3Z"/>
+                          </svg>
+                        {:else if item.file_type?.includes('image')}
+                          <svg class="w-8 h-8 text-purple-600" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M8.5,13.5L11,16.5L14.5,12L19,18H5M21,19V5C21,3.89 20.1,3 19,3H5A2,2 0 0,0 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19Z"/>
+                          </svg>
+                        {:else}
+                          <svg class="w-8 h-8 text-gray-600" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M13,9V3.5L18.5,9M6,2C4.89,2 4,2.89 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2H6Z"/>
+                          </svg>
+                        {/if}
+                      </div>
+                    {/if}
+                  </div>
+                  
+                  <!-- 오른쪽: 정보 영역 -->
+                  <div class="flex-1 flex flex-col gap-2 overflow-hidden pl-4">
+                    <div class="flex justify-between items-start">
+                      <!-- 제목 -->
+                      <h3 class="font-medium text-base line-clamp-2 pr-2 flex-1">{item.title}</h3>
+                      
+                      <!-- 메뉴 버튼 -->
+                      <div class="dropdown dropdown-end" on:click|stopPropagation>
+                        <div tabindex="0" role="button" class="btn btn-ghost btn-xs">
+                          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"></path>
+                          </svg>
+                        </div>
+                        <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-[1] w-40 p-2 shadow">
+                          <li><button on:click|stopPropagation={() => handleEdit(item)}>편집</button></li>
+                          <li><button on:click|stopPropagation={() => handleDelete(item)} class="text-error">삭제</button></li>
+                        </ul>
+                      </div>
                     </div>
                     
-                    <!-- 제목과 정보 -->
-                    <div class="flex-1 min-w-0">
-                      <h3 class="font-medium text-base mb-1 line-clamp-2">{item.title}</h3>
-                      <div class="flex items-center gap-3 text-sm text-base-content/60">
-                        <span>작성자</span>
+                    <!-- 태그들 -->
+                    <div class="flex items-center gap-1 overflow-x-hidden flex-wrap">
+                      {#if item.subject}
+                        <span class="badge badge-sm badge-info">{item.subject}</span>
+                      {/if}
+                      {#if item.grade}
+                        <span class="badge badge-sm badge-ghost">{item.grade}</span>
+                      {/if}
+                    </div>
+                    
+                    <!-- 메타 정보 -->
+                    <div class="flex items-center justify-between mt-auto">
+                      <div class="flex items-center gap-3 text-xs text-base-content/60">
+                        {#if item.pages}
+                          <span>{item.pages}페이지</span>
+                        {/if}
                         <span>{formatDate(item.created_at)}</span>
                       </div>
                       
-                      <!-- 태그들 -->
-                      <div class="flex flex-wrap gap-1 mt-2">
-                        {#if item.subject}
-                          <span class="badge badge-sm badge-ghost">{item.subject}</span>
-                        {/if}
-                        {#if item.is_extracted}
-                          <span class="badge badge-sm badge-success">추출완료 ({item.extracted_count})</span>
-                        {:else}
-                          <span class="badge badge-sm badge-warning">추출전</span>
-                        {/if}
-                        {#if item.pages}
-                          <span class="badge badge-sm badge-ghost">{item.pages}페이지</span>
-                        {/if}
-                      </div>
-                    </div>
-                  </div>
-                  
-                  <!-- 우측: 즐겨찾기와 메뉴 -->
-                  <div class="flex items-start gap-1">
-                    <button class="btn btn-ghost btn-xs" on:click|stopPropagation>
-                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"></path>
-                      </svg>
-                    </button>
-                    
-                    <div class="dropdown dropdown-end">
-                      <div tabindex="0" role="button" class="btn btn-ghost btn-xs" on:click|stopPropagation>
-                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                          <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"></path>
-                        </svg>
-                      </div>
-                      <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-[1] w-40 p-2 shadow">
-                        {#if type === 'original'}
-                          <li><button on:click|stopPropagation={() => handleExtract(item)}>문항 추출</button></li>
-                        {/if}
-                        <li><button on:click|stopPropagation={() => handleEdit(item)}>편집</button></li>
-                        <li><button on:click|stopPropagation={() => handleDelete(item)} class="text-error">삭제</button></li>
-                      </ul>
+                      <!-- 추출 상태 정보 -->
+                      {#if item.is_extracted}
+                        <div class="flex items-center gap-1">
+                          <span class="badge badge-sm badge-success">{item.extracted_count}문제</span>
+                        </div>
+                      {/if}
                     </div>
                   </div>
                 </div>
+                
+                <!-- 하단 액션 영역 -->
+                {#if type === 'original'}
+                  <div class="border-t border-base-200 px-4 py-2">
+                    <button 
+                      class="btn btn-primary btn-sm btn-block"
+                      on:click|stopPropagation={() => handleExtract(item)}
+                    >
+                      {#if item.is_extracted}
+                        문항 재추출
+                      {:else}
+                        문항 추출
+                      {/if}
+                    </button>
+                  </div>
+                {/if}
               </div>
             </div>
           {/if}

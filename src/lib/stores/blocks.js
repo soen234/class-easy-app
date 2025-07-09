@@ -85,10 +85,10 @@ export async function fetchBlocks(userId, materialId = null) {
   
   try {
     
-    // 실제 Supabase 조회 - materials 테이블과 join하여 자료명도 함께 가져옴
+    // 실제 Supabase 조회 - materials 테이블과 join하여 자료명과 과목도 함께 가져옴
     let query = supabase
       .from('blocks')
-      .select('*, materials(title)')
+      .select('*, materials(title, subject)')
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
     
@@ -103,10 +103,11 @@ export async function fetchBlocks(userId, materialId = null) {
       return { data: null, error };
     }
     
-    // 자료명을 블록 데이터에 포함
+    // 자료명과 과목을 블록 데이터에 포함
     const blocksWithMaterialTitle = (data || []).map(block => ({
       ...block,
-      material_title: block.materials?.title || '자료'
+      material_title: block.materials?.title || '자료',
+      subject: block.materials?.subject || block.subject || '미분류'
     }));
     
     blocks.set(blocksWithMaterialTitle);

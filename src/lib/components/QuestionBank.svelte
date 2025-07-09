@@ -62,15 +62,22 @@
   // 검색, 필터, 정렬 적용
   $: {
     let filtered = $blocks.filter(block => {
+      const searchLower = searchTerm.toLowerCase();
       const matchesSearch = !searchTerm || 
-        block.content?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        block.tags?.some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase())) ||
-        block.custom_tags?.some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()));
+        block.content?.toLowerCase().includes(searchLower) ||
+        block.tags?.some(tag => tag.toLowerCase().includes(searchLower)) ||
+        block.custom_tags?.some(tag => tag.toLowerCase().includes(searchLower)) ||
+        block.material_title?.toLowerCase().includes(searchLower) || // 출처(자료명) 검색
+        block.page_number?.toString().includes(searchTerm) || // 페이지 번호 검색
+        block.question_number?.toString().includes(searchTerm) || // 문제 번호 검색
+        block.title?.toLowerCase().includes(searchLower); // 제목 검색
       
       const matchesType = filterTypes.length === 0 || filterTypes.includes(block.type);
       const matchesSubtype = filterSubtypes.length === 0 || !block.subtype || filterSubtypes.includes(block.subtype);
       const matchesDifficulty = filterDifficulties.length === 0 || filterDifficulties.includes(block.difficulty);
-      const matchesSubject = filterSubjects.length === 0 || (block.tags && block.tags.some(tag => filterSubjects.includes(tag)));
+      const matchesSubject = filterSubjects.length === 0 || 
+        filterSubjects.includes(block.subject) || 
+        (block.tags && block.tags.some(tag => filterSubjects.includes(tag)));
       const matchesCustomTags = filterCustomTags.length === 0 || (block.custom_tags && filterCustomTags.some(tag => block.custom_tags.includes(tag)));
       const matchesChapter = filterChapters.length === 0 || filterChapters.includes(block.chapter);
       
@@ -285,6 +292,11 @@
   function getUniqueSubjects() {
     const subjects = new Set();
     $blocks.forEach(block => {
+      // 블록의 subject 필드에서 과목 가져오기
+      if (block.subject && block.subject !== '미분류') {
+        subjects.add(block.subject);
+      }
+      // tags에서도 과목 확인 (이전 버전 호환성)
       if (block.tags && Array.isArray(block.tags)) {
         block.tags.forEach(tag => {
           if (['국어', '영어', '수학', '사회', '과학', '기타'].includes(tag)) {
@@ -386,7 +398,7 @@
     <div class="flex-1 max-w-md">
       <input
         type="text"
-        placeholder="블록 내용, 태그 검색..."
+        placeholder="내용, 태그, 출처, 페이지, 문제번호 검색..."
         class="input input-bordered w-full"
         bind:value={searchTerm}
       />

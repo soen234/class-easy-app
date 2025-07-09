@@ -3,6 +3,7 @@
   import { user } from '$lib/stores/auth.js';
   import { saveFile } from '$lib/utils/fileStorage.js';
   import { supabase } from '$lib/supabase.js';
+  import PdfThumbnailGenerator from './PdfThumbnailGenerator.svelte';
   
   export let isOpen = false;
   export let currentFolderId = null;
@@ -15,6 +16,9 @@
   let uploading = false;
   let isDragging = false;
   let dropzone;
+  let thumbnailQueue = [];
+  let showThumbnailGenerator = false;
+  let currentThumbnailIndex = 0;
   
   // 파일 선택 처리
   function handleFileSelect(event) {
@@ -173,11 +177,30 @@
     const failCount = results.filter(r => !r.success).length;
     
     if (successCount > 0) {
-      dispatch('upload', { 
-        results, 
-        successCount, 
-        failCount 
-      });
+      // PDF 파일들 찾기
+      const pdfResults = results.filter(r => 
+        r.success && 
+        r.data?.file_type === 'application/pdf' &&
+        !r.data?.thumbnail_url
+      );
+      
+      if (pdfResults.length > 0) {
+        // PDF 썸네일 생성 큐에 추가
+        thumbnailQueue = pdfResults.map(r => ({
+          materialId: r.data.id,
+          fileUrl: r.data.file_url || `${supabase.storage.from('materials-original').getPublicUrl(r.data.file_path).data.publicUrl}`,
+          title: r.data.title
+        }));
+        currentThumbnailIndex = 0;
+        showThumbnailGenerator = true;
+        uploading = false;
+      } else {
+        dispatch('upload', { 
+          results, 
+          successCount, 
+          failCount 
+        });
+      }
     }
     
     if (failCount > 0) {
@@ -185,10 +208,10 @@
       alert(`다음 파일 업로드에 실패했습니다: ${failedFiles}`);
     }
     
-    // 모든 파일이 성공적으로 업로드되면 모달 닫기
-    if (failCount === 0) {
+    // 썸네일 생성이 필요 없고 모든 파일이 성공적으로 업로드되면 모달 닫기
+    if (failCount === 0 && !showThumbnailGenerator) {
       handleClose();
-    } else {
+    } else if (!showThumbnailGenerator) {
       // 실패한 파일만 남기기
       const failedIndices = results
         .map((r, i) => !r.success ? i : -1)
@@ -210,6 +233,31 @@
     uploadProgress = {};
     uploading = false;
     isDragging = false;
+    thumbnailQueue = [];
+    showThumbnailGenerator = false;
+    currentThumbnailIndex = 0;
+  }
+  
+  function handleThumbnailComplete(event) {
+    currentThumbnailIndex++;
+    
+    // 모든 썸네일 생성 완료
+    if (currentThumbnailIndex >= thumbnailQueue.length) {
+      showThumbnailGenerator = false;
+      dispatch('upload', { 
+        results: [], 
+        successCount: thumbnailQueue.length, 
+        failCount: 0,
+        thumbnailsGenerated: true
+      });
+      handleClose();
+    }
+  }
+  
+  function handleThumbnailError(error) {
+    console.error('Thumbnail generation error:', error);
+    // 에러가 나도 다음 파일 처리 진행
+    handleThumbnailComplete();
   }
   
   function formatFileSize(bytes) {
@@ -367,6 +415,31 @@
           </button>
         </div>
       </div>
+    </div>
+  </div>
+{/if}
+
+<!-- 썸네일 생성 모달 -->
+{#if showThumbnailGenerator && thumbnailQueue[currentThumbnailIndex]}
+  <div class="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
+    <div class="bg-base-100 rounded-lg shadow-xl w-full max-w-md p-6">
+      <h3 class="text-lg font-bold mb-4">PDF 썸네일 생성 중</h3>
+      
+      <div class="mb-4">
+        <div class="text-sm text-base-content/70 mb-2">
+          {currentThumbnailIndex + 1} / {thumbnailQueue.length} 파일 처리 중
+        </div>
+        <div class="text-sm font-medium">
+          {thumbnailQueue[currentThumbnailIndex].title}
+        </div>
+      </div>
+      
+      <PdfThumbnailGenerator
+        materialId={thumbnailQueue[currentThumbnailIndex].materialId}
+        fileUrl={thumbnailQueue[currentThumbnailIndex].fileUrl}
+        onComplete={handleThumbnailComplete}
+        onError={handleThumbnailError}
+      />
     </div>
   </div>
 {/if}

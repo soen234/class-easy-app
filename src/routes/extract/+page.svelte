@@ -496,7 +496,8 @@
             x: area.x / scaleRatio,
             y: area.y / scaleRatio,
             width: area.width / scaleRatio,
-            height: area.height / scaleRatio
+            height: area.height / scaleRatio,
+            normalized: true // 정규화된 좌표임을 표시
           };
           
           // 영역의 이미지 캡처
@@ -1363,6 +1364,8 @@
       
       // 최소 크기 제한
       if (newSelection.width > 20 && newSelection.height > 20) {
+        // normalized 플래그 유지
+        newSelection.normalized = originalSelection.normalized || false;
         resizingBlock.selection = newSelection;
         drawExistingBlocks();
       }
@@ -1409,6 +1412,14 @@
     
     // 리사이징 종료 - 자동 조정 없이 그대로 저장
     if (isResizing) {
+      // 리사이징된 블록의 이미지를 다시 캡처
+      if (resizingBlock && resizingBlock.selection) {
+        const updatedImageData = captureCanvasArea(resizingBlock.selection);
+        if (updatedImageData) {
+          resizingBlock.imageData = updatedImageData;
+        }
+      }
+      
       isResizing = false;
       resizingBlock = null;
       resizeHandle = null;
@@ -1741,7 +1752,8 @@
       x: rectToUse.x / scaleRatio,
       y: rectToUse.y / scaleRatio,
       width: rectToUse.width / scaleRatio,
-      height: rectToUse.height / scaleRatio
+      height: rectToUse.height / scaleRatio,
+      normalized: true // 정규화된 좌표임을 표시
     };
     
     const newBlock = {
@@ -2091,10 +2103,10 @@
   function toggleAllBlocks() {
     if (checkedBlocks.size === selectedBlocks.length && selectedBlocks.length > 0) {
       checkedBlocks.clear();
+      checkedBlocks = new Set(); // 반응성 트리거
     } else {
       checkedBlocks = new Set(selectedBlocks.map(b => b.id));
     }
-    checkedBlocks = checkedBlocks; // Svelte 반응성 트리거
     drawExistingBlocks();
   }
   
@@ -2225,6 +2237,7 @@
       
       selectedBlocks = selectedBlocks.filter(block => !checkedBlocks.has(block.id));
       checkedBlocks.clear();
+      checkedBlocks = new Set(); // 반응성 트리거
       
       // 블록 삭제 후 번호 재계산
       recalculateBlockNumbers();

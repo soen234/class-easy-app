@@ -616,6 +616,34 @@ export async function deleteMaterial(materialId) {
   }
 }
 
+// 재료 일괄 삭제
+export async function deleteMaterials(materialIds) {
+  loading.set(true);
+  
+  try {
+    // 실제 Supabase 일괄 삭제
+    const { error } = await supabase
+      .from('materials')
+      .delete()
+      .in('id', materialIds);
+    
+    if (error) {
+      console.error('Materials bulk delete error:', error);
+      return { error };
+    }
+    
+    // 스토어 업데이트
+    materials.update(items => items.filter(item => !materialIds.includes(item.id)));
+    return { error: null };
+    
+  } catch (error) {
+    console.error('Materials bulk delete error:', error);
+    return { error };
+  } finally {
+    loading.set(false);
+  }
+}
+
 // 파일 크기 포맷
 export function formatFileSize(bytes) {
   if (bytes === 0) return '0 Bytes';
