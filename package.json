@@ -30,7 +30,7 @@
     "fabric": "^6.7.0",
     "html2canvas": "^1.4.1",
     "jspdf": "^3.0.1",
-    "pdfjs-dist": "^5.3.93",
+    "pdfjs-dist": "^4.8.69",
     "sharp": "^0.34.2",
     "typescript": "^5.8.3"
   }

@@ -6,6 +6,7 @@
   import { initAuth, user, loading } from '$lib/stores/auth.js';
   import { cleanupLocalStorage, checkStorageHealth } from '$lib/utils/storageCleanup.js';
   import { migrateFromLocalStorage } from '$lib/utils/fileStorage.js';
+  import { sidebarCollapsed } from '$lib/stores/sidebar.js';
 
   onMount(async () => {
     // Supabase 세션 초기화

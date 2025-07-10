@@ -67,7 +67,7 @@
         .update({ 
           thumbnail_url: publicUrl,
           preview_url: publicUrl,
-          pages: pdf.numPages
+          pages: pages
         })
         .eq('id', materialId);
       

@@ -19,6 +19,10 @@
   let thumbnailQueue = [];
   let showThumbnailGenerator = false;
   let currentThumbnailIndex = 0;
+  let generateThumbnails = true;
+  let uploadedCount = 0;
+  let failedFiles = [];
+  let fileStatuses = {}; // 파일별 상태 추적
   
   // 파일 선택 처리
   function handleFileSelect(event) {
@@ -28,6 +32,7 @@
   
   // 파일 추가
   function addFiles(newFiles) {
+    const invalidFiles = [];
     const validFiles = newFiles.filter(file => {
       // PDF, 이미지, 텍스트 파일만 허용
       const allowedTypes = [
@@ -41,18 +46,22 @@
       ];
       
       if (!allowedTypes.includes(file.type)) {
-        alert(`${file.name}: 지원하지 않는 파일 형식입니다.`);
+        invalidFiles.push(`${file.name}: 지원하지 않는 파일 형식`);
         return false;
       }
       
       // 100MB 제한
       if (file.size > 100 * 1024 * 1024) {
-        alert(`${file.name}: 파일 크기가 100MB를 초과합니다.`);
+        invalidFiles.push(`${file.name}: 100MB 초과`);
         return false;
       }
       
       return true;
     });
+    
+    if (invalidFiles.length > 0) {
+      alert(invalidFiles.join('\n'));
+    }
     
     files = [...files, ...validFiles];
   }
@@ -82,24 +91,26 @@
     addFiles(droppedFiles);
   }
   
-  // 파일 업로드
-  async function uploadFiles() {
-    if (files.length === 0) return;
+  // 배치로 파일 업로드 (동시 업로드 수 제한)
+  async function uploadBatch(files, startIndex, batchSize = 3) {
+    const batch = files.slice(startIndex, startIndex + batchSize);
+    const promises = batch.map((file, idx) => uploadSingleFile(file, startIndex + idx));
+    return Promise.all(promises);
+  }
+
+  // 단일 파일 업로드
+  async function uploadSingleFile(file, index) {
+    fileStatuses[index] = 'uploading';
+    uploadProgress[index] = 0;
     
-    uploading = true;
-    uploadProgress = {};
+    const formData = new FormData();
+    formData.append('file', file);
+    if (currentFolderId) {
+      formData.append('folder_id', currentFolderId);
+    }
     
-    const uploadPromises = files.map(async (file, index) => {
-      uploadProgress[index] = 0;
-      
-      const formData = new FormData();
-      formData.append('file', file);
-      if (currentFolderId) {
-        formData.append('folder_id', currentFolderId);
-      }
-      
-      try {
-        const xhr = new XMLHttpRequest();
+    try {
+      const xhr = new XMLHttpRequest();
         
         // Progress 이벤트 리스너
         xhr.upload.addEventListener('progress', (e) => {
@@ -162,50 +173,109 @@
           await fetchMaterials($user.id, 'original');
         }
         
-        return { success: true, file: file.name, data: result.data };
-        
-      } catch (error) {
-        console.error(`Error uploading ${file.name}:`, error);
-        return { success: false, file: file.name, error: error.message };
+      fileStatuses[index] = 'completed';
+      uploadedCount++;
+      return { success: true, file: file.name, data: result.data };
+      
+    } catch (error) {
+      console.error(`Error uploading ${file.name}:`, error);
+      fileStatuses[index] = 'failed';
+      
+      let errorMessage = error.message;
+      if (error.message.includes('Row level security')) {
+        errorMessage = '권한이 없습니다';
+      } else if (error.message.includes('Network')) {
+        errorMessage = '네트워크 오류';
+      } else if (error.message.includes('timeout')) {
+        errorMessage = '시간 초과';
       }
+      
+      failedFiles.push({ name: file.name, error: errorMessage });
+      return { success: false, file: file.name, error: errorMessage };
+    }
+  }
+
+  // 파일 업로드 메인 함수
+  async function uploadFiles() {
+    if (files.length === 0) return;
+    
+    uploading = true;
+    uploadProgress = {};
+    uploadedCount = 0;
+    failedFiles = [];
+    fileStatuses = {};
+    
+    // 파일 상태 초기화
+    files.forEach((_, index) => {
+      fileStatuses[index] = 'pending';
     });
     
-    const results = await Promise.all(uploadPromises);
+    const results = [];
+    const batchSize = 3; // 동시 업로드 수 제한
+    
+    // 배치로 순차 업로드
+    for (let i = 0; i < files.length; i += batchSize) {
+      const batchResults = await uploadBatch(files, i, batchSize);
+      results.push(...batchResults);
+    }
     
     // 성공한 파일들 처리
     const successCount = results.filter(r => r.success).length;
     const failCount = results.filter(r => !r.success).length;
     
     if (successCount > 0) {
-      // PDF 파일들 찾기
-      const pdfResults = results.filter(r => 
-        r.success && 
-        r.data?.file_type === 'application/pdf' &&
-        !r.data?.thumbnail_url
-      );
-      
-      if (pdfResults.length > 0) {
-        // PDF 썸네일 생성 큐에 추가
-        thumbnailQueue = pdfResults.map(r => ({
-          materialId: r.data.id,
-          fileUrl: r.data.file_url || `${supabase.storage.from('materials-original').getPublicUrl(r.data.file_path).data.publicUrl}`,
-          title: r.data.title
-        }));
-        currentThumbnailIndex = 0;
-        showThumbnailGenerator = true;
-        uploading = false;
+      // PDF 파일들 찾기 (썸네일 생성 옵션이 켜져있을 때만)
+      if (generateThumbnails) {
+        const pdfResults = results.filter(r => 
+          r.success && 
+          r.data?.file_type === 'application/pdf' &&
+          !r.data?.thumbnail_url
+        );
+        
+        if (pdfResults.length > 0) {
+          // PDF 썸네일 생성 큐에 추가
+          thumbnailQueue = pdfResults.map(r => ({
+            materialId: r.data.id,
+            fileUrl: r.data.file_url || `${supabase.storage.from('materials-original').getPublicUrl(r.data.file_path).data.publicUrl}`,
+            title: r.data.title
+          }));
+          currentThumbnailIndex = 0;
+          showThumbnailGenerator = true;
+          uploading = false;
+        } else {
+          dispatch('upload', { 
+            results, 
+            successCount, 
+            failCount 
+          });
+          if (failCount === 0) {
+            handleClose();
+          }
+        }
       } else {
         dispatch('upload', { 
           results, 
           successCount, 
           failCount 
         });
+        if (failCount === 0) {
+          handleClose();
+        }
       }
     }
     
-    if (failCount > 0) {
-      const failedFiles = results.filter(r => !r.success).map(r => r.file).join(', ');
-      alert(`다음 파일 업로드에 실패했습니다: ${failedFiles}`);
+    uploading = false;
+    
+    if (failCount > 0 && successCount === 0) {
+      alert('모든 파일 업로드에 실패했습니다.');
+    } else if (failCount > 0) {
+      // 실패한 파일 목록만 표시하고 모달은 열어둠
+      const failed = results.filter(r => !r.success).map(r => r.file);
+      if (failed.length <= 3) {
+        alert(`다음 파일 업로드에 실패했습니다: ${failed.join(', ')}`);
+      } else {
+        alert(`${failed.length}개 파일 업로드에 실패했습니다.`);
+      }
     }
     
     // 썸네일 생성이 필요 없고 모든 파일이 성공적으로 업로드되면 모달 닫기
@@ -222,10 +292,24 @@
   }
   
   function handleClose() {
-    if (!uploading) {
+    if (!uploading || (uploading && confirm('업로드가 진행 중입니다. 정말 닫으시겠습니까?'))) {
       dispatch('close');
       resetForm();
     }
+  }
+  
+  // 실패한 파일만 재시도
+  function retryFailedFiles() {
+    const failedIndices = [];
+    Object.entries(fileStatuses).forEach(([index, status]) => {
+      if (status === 'failed') {
+        failedIndices.push(parseInt(index));
+      }
+    });
+    
+    // 실패한 파일만 남기고 재시도
+    files = files.filter((_, i) => failedIndices.includes(i));
+    uploadFiles();
   }
   
   function resetForm() {
@@ -236,6 +320,10 @@
     thumbnailQueue = [];
     showThumbnailGenerator = false;
     currentThumbnailIndex = 0;
+    generateThumbnails = true;
+    uploadedCount = 0;
+    failedFiles = [];
+    fileStatuses = {};
   }
   
   function handleThumbnailComplete(event) {
@@ -359,16 +447,34 @@
                   </div>
                 </div>
                 
-                {#if uploadProgress[index] !== undefined}
-                  <div class="w-32">
-                    <div class="flex items-center gap-2">
-                      <progress 
-                        class="progress progress-primary w-full" 
-                        value={uploadProgress[index]} 
-                        max="100"
-                      ></progress>
-                      <span class="text-xs">{uploadProgress[index]}%</span>
-                    </div>
+                {#if fileStatuses[index]}
+                  <div class="flex items-center gap-2">
+                    {#if fileStatuses[index] === 'pending'}
+                      <span class="text-sm text-base-content/50">대기중</span>
+                    {:else if fileStatuses[index] === 'uploading'}
+                      <div class="flex items-center gap-2">
+                        <progress 
+                          class="progress progress-primary w-20" 
+                          value={uploadProgress[index]} 
+                          max="100"
+                        ></progress>
+                        <span class="text-xs">{uploadProgress[index]}%</span>
+                      </div>
+                    {:else if fileStatuses[index] === 'completed'}
+                      <span class="text-sm text-success flex items-center gap-1">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        완료
+                      </span>
+                    {:else if fileStatuses[index] === 'failed'}
+                      <span class="text-sm text-error flex items-center gap-1">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                        실패
+                      </span>
+                    {/if}
                   </div>
                 {:else if !uploading}
                   <button 
@@ -388,19 +494,48 @@
       
       <!-- 푸터 -->
       <div class="flex justify-between items-center gap-4 p-6 pt-4 border-t">
-        <div class="text-sm text-base-content/50">
-          {#if files.length > 0}
-            총 {files.length}개 파일, {formatFileSize(files.reduce((sum, f) => sum + f.size, 0))}
+        <div class="flex flex-col gap-1">
+          <div class="text-sm text-base-content/50">
+            {#if files.length > 0}
+              총 {files.length}개 파일, {formatFileSize(files.reduce((sum, f) => sum + f.size, 0))}
+            {/if}
+          </div>
+          {#if uploading}
+            <div class="text-sm font-medium">
+              업로드 중: {uploadedCount} / {files.length} 완료
+              {#if failedFiles.length > 0}
+                <span class="text-error">({failedFiles.length}개 실패)</span>
+              {/if}
+            </div>
           {/if}
         </div>
         <div class="flex gap-2">
+          {#if files.some(f => f.type === 'application/pdf')}
+            <label class="flex items-center gap-2">
+              <input 
+                type="checkbox" 
+                class="checkbox checkbox-sm"
+                bind:checked={generateThumbnails}
+                disabled={uploading}
+              />
+              <span class="text-sm">PDF 썸네일 생성</span>
+            </label>
+          {/if}
           <button 
             class="btn btn-ghost"
             on:click={handleClose}
             disabled={uploading}
           >
-            취소
+            {uploading ? '닫기' : '취소'}
           </button>
+          {#if failedFiles.length > 0 && !uploading}
+            <button 
+              class="btn btn-warning btn-sm"
+              on:click={retryFailedFiles}
+            >
+              실패한 파일 재시도
+            </button>
+          {/if}
           <button 
             class="btn btn-primary"
             on:click={uploadFiles}

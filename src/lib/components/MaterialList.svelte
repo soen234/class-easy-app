@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { page } from '$app/stores';
   import { user } from '$lib/stores/auth.js';
   import { materials, loading, fetchMaterials, deleteMaterial, deleteMaterials, updateMaterial, formatFileSize, getFileTypeIcon, getFileTypeColor } from '$lib/stores/materials.js';
   import { supabase } from '$lib/supabase.js';
@@ -8,6 +9,7 @@
   import FileUploadModal from './FileUploadModal.svelte';
   
   export let type = 'original';
+  export let initialFolderId = null;
   
   let filteredMaterials = [];
   let displayItems = [];
@@ -149,10 +151,14 @@
     if (folder.type === 'folder') {
       currentFolder = folder.path;
       currentFolderId = folder.id;
+      // Update URL with folder ID
+      goto(`/my-materials?folder=${folder.id}`);
     } else if (typeof folder === 'string') {
       // 루트로 이동하는 경우
       currentFolder = folder;
       currentFolderId = null;
+      // Clear folder param when going to root
+      goto('/my-materials');
     }
   }
 
@@ -290,7 +296,9 @@
 
   function handleExtract(material) {
     // 선택된 자료의 ID를 URL 파라미터로 전달하여 문항 추출 페이지로 이동
-    goto(`/extract?materialId=${material.id}`);
+    // Include return URL to come back to current folder
+    const returnUrl = currentFolderId ? `/my-materials?folder=${currentFolderId}` : '/my-materials';
+    goto(`/extract?materialId=${material.id}&returnUrl=${encodeURIComponent(returnUrl)}`);
   }
 
   function handleEdit(material) {
@@ -668,9 +676,19 @@
     }
   }
 
-  onMount(() => {
+  onMount(async () => {
     if ($user?.id) {
       loadMaterials();
+      await loadFolders();
+      
+      // Initialize from URL parameter if provided
+      if (initialFolderId) {
+        const folder = folders.find(f => f.id === initialFolderId);
+        if (folder) {
+          currentFolder = buildFolderPath(folder, folders);
+          currentFolderId = folder.id;
+        }
+      }
     }
   });
 </script>

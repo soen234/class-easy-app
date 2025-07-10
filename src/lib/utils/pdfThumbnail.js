@@ -1,7 +1,9 @@
 import * as pdfjsLib from 'pdfjs-dist';
 
-// Worker 설정 - CDN 사용
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://unpkg.com/pdfjs-dist@4.0.269/build/pdf.worker.min.js';
+// PDF.js 4.8 버전용 worker 설정
+if (typeof window !== 'undefined') {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
+}
 
 export async function generatePdfThumbnail(fileUrl, options = {}) {
   const {

@@ -62,9 +62,7 @@
           user_id: $user.id,
           name: folderName.trim(),
           parent_id: parentId,
-          type: folderType,
-          color: selectedColor,
-          path: currentPath ? `${currentPath}/${folderName.trim()}` : `/${folderName.trim()}`
+          color: selectedColor
         })
         .select()
         .single();

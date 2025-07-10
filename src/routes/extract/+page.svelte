@@ -15,6 +15,7 @@
   let extractionMode = 'manual';
   let selectedBlocks = [];
   let nextBlockId = 1;
+  let returnUrl = null;
   
   // UUID 생성 함수
   function generateUUID() {
@@ -173,9 +174,10 @@
     if (browser && $user?.id) {
       await fetchMaterials($user.id, 'original');
       
-      // URL 파라미터에서 step과 materialId 확인
+      // URL 파라미터에서 step, materialId, returnUrl 확인
       const stepParam = $page.url.searchParams.get('step');
       const materialId = $page.url.searchParams.get('materialId');
+      returnUrl = $page.url.searchParams.get('returnUrl');
       
       if (stepParam) {
         extractionStep = stepParam;
@@ -2258,10 +2260,14 @@
   function goBack() {
     if (extractionStep === 'configure-blocks') {
       extractionStep = 'extract-blocks';
+      updateHistory();
+    } else if (extractionStep === 'extract-blocks' && returnUrl) {
+      // If we have a return URL, go back to the previous page
+      goto(returnUrl);
     } else {
       extractionStep = 'select-material';
+      updateHistory();
     }
-    updateHistory();
   }
   
   async function finalizeExtraction() {
@@ -2770,7 +2776,7 @@
         
         <div class="breadcrumbs text-sm">
           <ul>
-            <li><a href="/">내 자료</a></li>
+            <li><a href={returnUrl || '/my-materials'}>내 자료</a></li>
             <li>문항 추출</li>
           </ul>
         </div>

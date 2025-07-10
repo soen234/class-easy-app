@@ -3,6 +3,8 @@
   import MaterialList from './MaterialList.svelte';
   import { writable } from 'svelte/store';
 
+  export let folderId = null;
+
   const activeTab = writable('original');
   
   let currentTab = 'original';
@@ -26,6 +28,6 @@
   <TabNavigation {activeTab} />
   
   <div class="mt-6">
-    <MaterialList type={currentTab} />
+    <MaterialList type={currentTab} initialFolderId={folderId} />
   </div>
 </div>
