@@ -223,7 +223,7 @@ function createQuestionObject(block, style, formatOptions, position) {
       // Store image URL and position info for later loading
       imageUrl: block.config.imageUrl,
       isImagePlaceholder: true,
-      imagePosition: { x: x + 30, y: currentY, width: contentWidth, height: 200 },
+      imagePosition: { x: x + 30, y: currentY, width: contentWidth, height: 300 }, // Increased height for better quality
       selectable: true,
       hasControls: true,
       hasBorders: true,
@@ -231,7 +231,7 @@ function createQuestionObject(block, style, formatOptions, position) {
     });
     
     objects.push(imagePlaceholder);
-    currentY += 210; // Add space for image
+    currentY += 310; // Add space for larger image
   }
   
   // Difficulty indicator

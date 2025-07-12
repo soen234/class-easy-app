@@ -1879,8 +1879,8 @@
       };
     }
     
-    // 고해상도를 위한 스케일 팩터
-    const scaleFactor = 2; // 2배 해상도
+    // 고해상도를 위한 스케일 팩터 (더 높은 해상도)
+    const scaleFactor = 4; // 4배 해상도로 증가
     
     // 임시 캔버스 생성
     const tempCanvas = document.createElement('canvas');
@@ -1889,7 +1889,7 @@
     const tempCtx = tempCanvas.getContext('2d');
     
     // 고품질 렌더링 설정
-    tempCtx.imageSmoothingEnabled = true;
+    tempCtx.imageSmoothingEnabled = false; // 선명한 이미지를 위해 false로 설정
     tempCtx.imageSmoothingQuality = 'high';
     
     // 스케일 적용
@@ -1902,8 +1902,8 @@
       0, 0, scaledRect.width, scaledRect.height
     );
     
-    // 높은 품질로 base64 변환
-    return tempCanvas.toDataURL('image/jpeg', 0.95);
+    // PNG로 저장하여 품질 손실 최소화 (JPEG 대신)
+    return tempCanvas.toDataURL('image/png');
   }
   
   function drawSelectionOverlay() {

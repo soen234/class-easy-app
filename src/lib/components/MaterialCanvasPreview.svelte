@@ -25,12 +25,6 @@
   let containerWidth = 800;
   let containerHeight = 600;
   
-  // Drag and drop variables
-  let isDragging = false;
-  let draggedObject = null;
-  let dragStartPos = null;
-  let originalPos = null;
-  
   // Drawing variables
   let isDrawing = false;
   let drawingObject = null;
@@ -40,6 +34,8 @@
   let scrollContainer;
   let lastScrollLeft = 0;
   let lastScrollTop = 0;
+  let isUpdatingPreview = false; // Flag to prevent multiple updates
+  let isCanvasReady = false; // Flag to track if canvas is ready for updates
   
   // Helper function to debounce resize events
   function debounce(func, wait) {
@@ -144,6 +140,14 @@
     requestAnimationFrame(() => {
       updateContainerDimensions();
       initializeCanvas();
+      // Set canvas ready after initialization
+      setTimeout(() => {
+        isCanvasReady = true;
+        // Initial preview update after canvas is ready
+        if (blocks && blocks.length > 0) {
+          updatePreview();
+        }
+      }, 100);
     });
     
     // Add keyboard event listener for delete
@@ -233,10 +237,15 @@
     };
   });
   
-  // Update preview when data changes
-  $: if (canvas && (blocks || formatOptions || testInfo)) {
-    updatePreview();
+  // Update preview when data changes (only when canvas is ready)
+  $: if (canvas && isCanvasReady && (blocks || formatOptions || testInfo)) {
+    debouncedUpdatePreview();
   }
+  
+  // Debounced version of updatePreview to prevent multiple rapid calls
+  const debouncedUpdatePreview = debounce(() => {
+    updatePreview();
+  }, 100);
   
   // Update canvas size when zoom changes
   $: if (canvas && zoom) {
@@ -277,7 +286,10 @@
   }
   
   function updatePreview() {
-    if (!canvas) return;
+    if (!canvas || isUpdatingPreview) return;
+    
+    // Set flag to prevent concurrent updates
+    isUpdatingPreview = true;
     
     console.log('updatePreview called with', blocks.length, 'blocks');
     
@@ -300,8 +312,12 @@
       currentPageIndex = Math.max(0, pages.length - 1);
     }
     
-    // Display current page
-    displayPage(currentPageIndex);
+    // Display current page with a small delay to ensure clean state
+    requestAnimationFrame(() => {
+      displayPage(currentPageIndex).finally(() => {
+        isUpdatingPreview = false;
+      });
+    });
   }
   
   async function displayPage(pageIndex) {
@@ -314,6 +330,9 @@
     canvas.clear();
     canvas.discardActiveObject();
     canvas.renderAll();
+    
+    // Add a small delay to ensure canvas is completely cleared
+    await new Promise(resolve => setTimeout(resolve, 50));
     
     console.log('Objects after clear:', canvas.getObjects().length);
     
@@ -364,21 +383,39 @@
   
   async function processObjectsWithImages(objects) {
     const processedObjects = [];
+    const processedImageUrls = new Set(); // Track processed images to prevent duplicates
     
     console.log('Processing objects with images:', objects.length);
     
     for (const obj of objects) {
       // Process image placeholders
       if (obj.isImagePlaceholder && obj.imageUrl) {
+        // Check if this image URL has already been processed
+        const imageKey = `${obj.imageUrl}_${obj.imagePosition?.x}_${obj.imagePosition?.y}`;
+        if (processedImageUrls.has(imageKey)) {
+          console.log('Skipping duplicate image:', imageKey);
+          continue; // Skip duplicate image
+        }
+        
         // Load image and replace placeholder
         const img = await loadImage(obj.imageUrl, obj.imagePosition);
         if (img) {
+          // Mark this image as processed
+          processedImageUrls.add(imageKey);
+          
           // Set proper attributes for the loaded image
           img.set({
             selectable: true,
             hasControls: true,
             hasBorders: true,
-            lockScalingFlip: true
+            lockScalingFlip: true,
+            transparentCorners: false,
+            borderColor: '#1a73e8',
+            cornerColor: '#1a73e8',
+            cornerStrokeColor: '#1a73e8',
+            cornerSize: 10,
+            cornerStyle: 'circle',
+            _imageKey: imageKey // Store key for debugging
           });
           processedObjects.push(img);
         } else {
@@ -411,14 +448,17 @@
         
         const fabricImg = new fabric.Image(img, {
           objectCaching: false, // Disable caching for better quality
-          imageSmoothing: true
+          imageSmoothing: true,
+          // Set quality to highest
+          quality: 1.0
         });
         
-        // Calculate scale to fit position while maintaining quality
+        // Calculate scale to fit position while maintaining aspect ratio
+        // Use a slightly smaller scale to ensure quality
         const scale = Math.min(
           pos.width / img.width,
           pos.height / img.height
-        );
+        ) * 0.95; // Slightly smaller to maintain quality
         
         fabricImg.set({
           left: pos.x,
@@ -429,7 +469,10 @@
           evented: true,
           hasControls: true,
           hasBorders: true,
-          lockScalingFlip: true
+          lockScalingFlip: true,
+          // Ensure original dimensions are preserved
+          width: img.width,
+          height: img.height
         });
         
         // In fabric.js v6, image quality is handled automatically
@@ -479,22 +522,23 @@
   function setupDragAndDrop() {
     if (!canvas) return;
     
-    // Mouse down - start dragging or drawing
+    // Disable object caching for better resize quality
+    fabric.Object.prototype.objectCaching = false;
+    
+    // Set default control settings
+    fabric.Object.prototype.transparentCorners = false;
+    fabric.Object.prototype.cornerColor = '#1a73e8';
+    fabric.Object.prototype.cornerStrokeColor = '#1a73e8';
+    fabric.Object.prototype.borderColor = '#1a73e8';
+    fabric.Object.prototype.cornerSize = 10;
+    fabric.Object.prototype.cornerStyle = 'circle';
+    
+    // Mouse down - for drawing tools only
     canvas.on('mouse:down', function(options) {
       const pointer = canvas.getPointer(options.e);
       mouseDownPoint = pointer;
       
-      if (selectedTool === 'select') {
-        if (options.target && options.target.selectable) {
-          isDragging = true;
-          draggedObject = options.target;
-          dragStartPos = pointer;
-          originalPos = {
-            left: draggedObject.left,
-            top: draggedObject.top
-          };
-        }
-      } else if (selectedTool === 'text') {
+      if (selectedTool === 'text') {
         // Add text at click position
         addText(pointer.x, pointer.y);
       } else if (selectedTool === 'shape' && selectedShape) {
@@ -504,48 +548,38 @@
       }
     });
     
-    // Mouse move - update position or shape
+    // Mouse move - for drawing shapes only
     canvas.on('mouse:move', function(options) {
-      const pointer = canvas.getPointer(options.e);
-      
-      if (isDragging && draggedObject) {
-        const deltaX = pointer.x - dragStartPos.x;
-        const deltaY = pointer.y - dragStartPos.y;
-        
-        draggedObject.set({
-          left: originalPos.left + deltaX,
-          top: originalPos.top + deltaY
-        });
-        
-        // Snap to grid if enabled
-        if (showGrid) {
-          draggedObject.set({
-            left: Math.round(draggedObject.left / GRID_SIZE) * GRID_SIZE,
-            top: Math.round(draggedObject.top / GRID_SIZE) * GRID_SIZE
-          });
-        }
-        
-        canvas.renderAll();
-      } else if (isDrawing && drawingObject) {
-        // Update shape size while drawing
+      if (isDrawing && drawingObject) {
+        const pointer = canvas.getPointer(options.e);
         updateDrawingShape(pointer.x, pointer.y);
       }
     });
     
-    // Mouse up - stop dragging or drawing
+    // Mouse up - finish drawing
     canvas.on('mouse:up', function() {
-      if (isDragging && draggedObject) {
-        // Update the page objects with new position
-        updateObjectPosition(draggedObject);
-        isDragging = false;
-        draggedObject = null;
-        dragStartPos = null;
-        originalPos = null;
-      } else if (isDrawing && drawingObject) {
+      if (isDrawing && drawingObject) {
         // Finish drawing
         isDrawing = false;
         drawingObject = null;
         mouseDownPoint = null;
+      }
+    });
+    
+    // Object modified event (after move, resize, rotate, etc.)
+    canvas.on('object:modified', function(options) {
+      if (options.target) {
+        // Update the page objects with new properties
+        updateObjectPosition(options.target);
+        
+        // Snap to grid if enabled
+        if (showGrid) {
+          options.target.set({
+            left: Math.round(options.target.left / GRID_SIZE) * GRID_SIZE,
+            top: Math.round(options.target.top / GRID_SIZE) * GRID_SIZE
+          });
+          canvas.renderAll();
+        }
       }
     });
     
@@ -598,14 +632,25 @@
   export { canvas };
   
   function updateObjectPosition(object) {
-    // Update the position in the pages array for persistence
+    // Update the object properties in the pages array for persistence
     if (pages[currentPageIndex]) {
       const objects = pages[currentPageIndex].objects;
       const index = objects.findIndex(obj => obj === object);
       if (index !== -1) {
-        // Update position data
+        // Update all transformation data
         objects[index].left = object.left;
         objects[index].top = object.top;
+        objects[index].scaleX = object.scaleX;
+        objects[index].scaleY = object.scaleY;
+        objects[index].angle = object.angle;
+        
+        // For text objects, update fontSize based on scale
+        if (object.type === 'i-text' || object.type === 'text') {
+          objects[index].fontSize = object.fontSize * object.scaleY;
+          object.fontSize = objects[index].fontSize;
+          object.scaleX = 1;
+          object.scaleY = 1;
+        }
       }
     }
   }
@@ -728,16 +773,22 @@
   }
   
   function nextPage() {
-    if (currentPageIndex < pages.length - 1) {
+    if (currentPageIndex < pages.length - 1 && !isUpdatingPreview) {
       currentPageIndex++;
-      displayPage(currentPageIndex);
+      isUpdatingPreview = true;
+      displayPage(currentPageIndex).finally(() => {
+        isUpdatingPreview = false;
+      });
     }
   }
   
   function prevPage() {
-    if (currentPageIndex > 0) {
+    if (currentPageIndex > 0 && !isUpdatingPreview) {
       currentPageIndex--;
-      displayPage(currentPageIndex);
+      isUpdatingPreview = true;
+      displayPage(currentPageIndex).finally(() => {
+        isUpdatingPreview = false;
+      });
     }
   }
   
